@@ -18,10 +18,9 @@ package capacity
 
 import (
 	"fmt"
-	"math"
-
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
+	"math"
 
 	"volcano.sh/apis/pkg/apis/scheduling"
 
@@ -65,6 +64,8 @@ type queueAttr struct {
 	// realCapability represents the resource limit of the queue, LessEqual capability
 	realCapability *api.Resource
 	guarantee      *api.Resource
+	// nonJDosModelRequest represents the resource request of the job without JDos device model
+	nonJDosModelRequest *api.Resource
 }
 
 // New return capacityPlugin action
@@ -125,13 +126,19 @@ func (cp *capacityPlugin) OnSessionOpen(ssn *framework.Session) {
 			}
 			allocated := allocations[job.Queue]
 
-			exceptReclaimee := allocated.Clone().Sub(reclaimee.Resreq)
+			queue := ssn.Queues[job.Queue]
+			if queue.IsJDosDeviceMapQueue() && !reclaimee.HasJDosDeviceModelLabel() {
+				setLabel := cp.setJDosDeviceLabel(queue, attr, reclaimee)
+				klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>.", reclaimee.Pod.Labels[api.JDosDeviceModelLabel], queue.Name, setLabel)
+			}
+			reclaimeeResreq := reclaimee.ResreqReplaceScalar(queue.JDosDeviceMap, "")
+			exceptReclaimee := allocated.Clone().Sub(reclaimeeResreq)
 			// When scalar resource not specified in deserved such as "pods", we should skip it and consider it as infinity,
 			// so the following first condition will be true and the current queue will not be reclaimed.
 			if allocated.LessEqual(attr.deserved, api.Infinity) || !attr.guarantee.LessEqual(exceptReclaimee, api.Zero) {
 				continue
 			}
-			allocated.Sub(reclaimee.Resreq)
+			allocated.Sub(reclaimeeResreq)
 			victims = append(victims, reclaimee)
 		}
 		klog.V(4).Infof("Victims from capacity plugin, victims=%+v reclaimer=%s", victims, reclaimer)
@@ -152,12 +159,17 @@ func (cp *capacityPlugin) OnSessionOpen(ssn *framework.Session) {
 		}
 		attr := cp.queueOpts[queue.UID]
 
-		futureUsed := attr.allocated.Clone().Add(task.Resreq)
-		overused := !futureUsed.LessEqualWithDimension(attr.deserved, task.Resreq)
+		if queue.IsJDosDeviceMapQueue() && !task.HasJDosDeviceModelLabel() {
+			setLabel := cp.setJDosDeviceLabel(queue, attr, task)
+			klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>.", task.Pod.Labels[api.JDosDeviceModelLabel], queue.Name, setLabel)
+		}
+		taskResreq := task.ResreqReplaceScalar(queue.JDosDeviceMap, "")
+		futureUsed := attr.allocated.Clone().Add(taskResreq)
+		overused := !futureUsed.LessEqualWithDimension(attr.deserved, taskResreq)
 		metrics.UpdateQueueOverused(attr.name, overused)
 		if overused {
 			klog.V(3).Infof("Queue <%v> can not reclaim, deserved <%v>, allocated <%v>, share <%v>, requested <%v>",
-				queue.Name, attr.deserved, attr.allocated, attr.share, task.Resreq)
+				queue.Name, attr.deserved, attr.allocated, attr.share, taskResreq)
 		}
 
 		// PreemptiveFn is the opposite of OverusedFn in proportion plugin cause as long as there is a one-dimensional
@@ -236,36 +248,38 @@ func (cp *capacityPlugin) OnSessionOpen(ssn *framework.Session) {
 		AllocateFunc: func(event *framework.Event) {
 			job := ssn.Jobs[event.Task.Job]
 			attr := cp.queueOpts[job.Queue]
-			attr.allocated.Add(event.Task.Resreq)
+			taskResreq := event.Task.ResreqReplaceScalar(ssn.Queues[job.Queue].JDosDeviceMap, "")
+			attr.allocated.Add(taskResreq)
 			metrics.UpdateQueueAllocated(attr.name, attr.allocated.MilliCPU, attr.allocated.Memory, attr.allocated.ScalarResources)
 
 			cp.updateShare(attr)
 			if hierarchyEnabled {
 				for _, ancestorID := range attr.ancestors {
 					ancestorAttr := cp.queueOpts[ancestorID]
-					ancestorAttr.allocated.Add(event.Task.Resreq)
+					ancestorAttr.allocated.Add(taskResreq)
 				}
 			}
 
 			klog.V(4).Infof("Capacity AllocateFunc: task <%v/%v>, resreq <%v>,  share <%v>",
-				event.Task.Namespace, event.Task.Name, event.Task.Resreq, attr.share)
+				event.Task.Namespace, event.Task.Name, taskResreq, attr.share)
 		},
 		DeallocateFunc: func(event *framework.Event) {
 			job := ssn.Jobs[event.Task.Job]
 			attr := cp.queueOpts[job.Queue]
-			attr.allocated.Sub(event.Task.Resreq)
+			taskResreq := event.Task.ResreqReplaceScalar(ssn.Queues[job.Queue].JDosDeviceMap, "")
+			attr.allocated.Sub(taskResreq)
 			metrics.UpdateQueueAllocated(attr.name, attr.allocated.MilliCPU, attr.allocated.Memory, attr.allocated.ScalarResources)
 
 			cp.updateShare(attr)
 			if hierarchyEnabled {
 				for _, ancestorID := range attr.ancestors {
 					ancestorAttr := cp.queueOpts[ancestorID]
-					ancestorAttr.allocated.Sub(event.Task.Resreq)
+					ancestorAttr.allocated.Sub(taskResreq)
 				}
 			}
 
 			klog.V(4).Infof("Capacity EvictFunc: task <%v/%v>, resreq <%v>,  share <%v>",
-				event.Task.Namespace, event.Task.Name, event.Task.Resreq, attr.share)
+				event.Task.Namespace, event.Task.Name, taskResreq, attr.share)
 		},
 	})
 }
@@ -294,13 +308,15 @@ func (cp *capacityPlugin) buildQueueAttrs(ssn *framework.Session) {
 				queueID: queue.UID,
 				name:    queue.Name,
 
-				deserved:  api.NewResource(queue.Queue.Spec.Deserved),
-				allocated: api.EmptyResource(),
-				request:   api.EmptyResource(),
-				elastic:   api.EmptyResource(),
-				inqueue:   api.EmptyResource(),
-				guarantee: api.EmptyResource(),
+				deserved:            api.NewResource(queue.Queue.Spec.Deserved),
+				allocated:           api.EmptyResource(),
+				request:             api.EmptyResource(),
+				elastic:             api.EmptyResource(),
+				inqueue:             api.EmptyResource(),
+				guarantee:           api.EmptyResource(),
+				nonJDosModelRequest: api.EmptyResource(),
 			}
+
 			if len(queue.Queue.Spec.Capability) != 0 {
 				attr.capability = api.NewResource(queue.Queue.Spec.Capability)
 				if attr.capability.MilliCPU <= 0 {
@@ -317,8 +333,7 @@ func (cp *capacityPlugin) buildQueueAttrs(ssn *framework.Session) {
 			if attr.capability == nil {
 				attr.realCapability = realCapability
 			} else {
-				realCapability.MinDimensionResource(attr.capability, api.Infinity)
-				attr.realCapability = realCapability
+				attr.realCapability = attr.capability.Clone().MinDimensionResource(realCapability, api.Infinity)
 			}
 			cp.queueOpts[job.Queue] = attr
 			klog.V(4).Infof("Added Queue <%s> attributes.", job.Queue)
@@ -326,14 +341,21 @@ func (cp *capacityPlugin) buildQueueAttrs(ssn *framework.Session) {
 
 		attr := cp.queueOpts[job.Queue]
 		for status, tasks := range job.TaskStatusIndex {
+			queue := ssn.Queues[job.Queue]
 			if api.AllocatedStatus(status) {
 				for _, t := range tasks {
-					attr.allocated.Add(t.Resreq)
-					attr.request.Add(t.Resreq)
+					taskResreq := t.ResreqReplaceScalar(queue.JDosDeviceMap, "")
+					attr.allocated.Add(taskResreq)
+					attr.request.Add(taskResreq)
 				}
 			} else if status == api.Pending {
 				for _, t := range tasks {
-					attr.request.Add(t.Resreq)
+					taskResreq := t.ResreqReplaceScalar(queue.JDosDeviceMap, "")
+					if queue.IsJDosDeviceMapQueue() && !t.HasJDosDeviceModelLabel() {
+						attr.nonJDosModelRequest.Add(taskResreq)
+						continue
+					}
+					attr.request.Add(taskResreq)
 				}
 			}
 		}
@@ -354,8 +376,8 @@ func (cp *capacityPlugin) buildQueueAttrs(ssn *framework.Session) {
 			attr.inqueue.Add(job.DeductSchGatedResources(inqueued))
 		}
 		attr.elastic.Add(job.GetElasticResources())
-		klog.V(5).Infof("Queue %s allocated <%s> request <%s> inqueue <%s> elastic <%s>",
-			attr.name, attr.allocated.String(), attr.request.String(), attr.inqueue.String(), attr.elastic.String())
+		klog.V(5).Infof("Queue %s allocated <%s> request <%s> nonJDosModelRequest <%s> inqueue <%s> elastic <%s>",
+			attr.name, attr.allocated.String(), attr.request.String(), attr.nonJDosModelRequest.String(), attr.inqueue.String(), attr.elastic.String())
 	}
 
 	for _, attr := range cp.queueOpts {
@@ -365,8 +387,8 @@ func (cp *capacityPlugin) buildQueueAttrs(ssn *framework.Session) {
 
 		attr.deserved = helpers.Max(attr.deserved, attr.guarantee)
 		cp.updateShare(attr)
-		klog.V(4).Infof("The attributes of queue <%s> in capacity: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, elastic <%v>, share <%0.2f>",
-			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.request, attr.elastic, attr.share)
+		klog.V(4).Infof("The attributes of queue <%s> in capacity: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, nonJDosModelRequest <%s>, elastic <%v>, share <%0.2f>",
+			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.request, attr.nonJDosModelRequest.String(), attr.elastic, attr.share)
 	}
 
 	// Record metrics
@@ -456,18 +478,25 @@ func (cp *capacityPlugin) buildHierarchicalQueueAttrs(ssn *framework.Session) bo
 
 		oldAllocated := attr.allocated.Clone()
 		oldRequest := attr.request.Clone()
+		oldNonJDosModelRequest := attr.nonJDosModelRequest.Clone()
 		oldInqueue := attr.inqueue.Clone()
 		oldElastic := attr.elastic.Clone()
 
 		for status, tasks := range job.TaskStatusIndex {
+			queue := ssn.Queues[job.Queue]
 			if api.AllocatedStatus(status) {
 				for _, t := range tasks {
-					attr.allocated.Add(t.Resreq)
-					attr.request.Add(t.Resreq)
+					attr.allocated.Add(t.ResreqReplaceScalar(queue.JDosDeviceMap, ""))
+					attr.request.Add(t.ResreqReplaceScalar(queue.JDosDeviceMap, ""))
 				}
 			} else if status == api.Pending {
 				for _, t := range tasks {
-					attr.request.Add(t.Resreq)
+					taskResreq := t.ResreqReplaceScalar(queue.JDosDeviceMap, "")
+					if queue.IsJDosDeviceMapQueue() && !t.HasJDosDeviceModelLabel() {
+						attr.nonJDosModelRequest.Add(taskResreq)
+						continue
+					}
+					attr.request.Add(taskResreq)
 				}
 			}
 		}
@@ -491,12 +520,13 @@ func (cp *capacityPlugin) buildHierarchicalQueueAttrs(ssn *framework.Session) bo
 			ancestorAttr := cp.queueOpts[ancestor]
 			ancestorAttr.allocated.Add(attr.allocated.Clone().Sub(oldAllocated))
 			ancestorAttr.request.Add(attr.request.Clone().Sub(oldRequest))
+			ancestorAttr.nonJDosModelRequest.Add(attr.nonJDosModelRequest.Clone().Sub(oldNonJDosModelRequest))
 			ancestorAttr.inqueue.Add(attr.inqueue.Clone().Sub(oldInqueue))
 			ancestorAttr.elastic.Add(attr.elastic.Clone().Sub(oldElastic))
 		}
 
-		klog.V(5).Infof("Queue %s allocated <%s> request <%s> inqueue <%s> elastic <%s>",
-			attr.name, attr.allocated.String(), attr.request.String(), attr.inqueue.String(), attr.elastic.String())
+		klog.V(5).Infof("Queue %s allocated <%s> request <%s> nonJDosModelRequest <%s> inqueue <%s> elastic <%s>",
+			attr.name, attr.allocated.String(), attr.request.String(), attr.nonJDosModelRequest.String(), attr.inqueue.String(), attr.elastic.String())
 	}
 
 	// init root queue realCapability/capability/deserved as cp.totalResource
@@ -518,8 +548,8 @@ func (cp *capacityPlugin) buildHierarchicalQueueAttrs(ssn *framework.Session) bo
 	// Update share
 	for _, attr := range cp.queueOpts {
 		cp.updateShare(attr)
-		klog.V(4).Infof("The attributes of queue <%s> in capacity: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, elastic <%v>, share <%0.2f>",
-			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.request, attr.elastic, attr.share)
+		klog.V(4).Infof("The attributes of queue <%s> in capacity: deserved <%v>, realCapability <%v>, allocate <%v>, request <%v>, nonJDosModelRequest <%v>, elastic <%v>, share <%0.2f>",
+			attr.name, attr.deserved, attr.realCapability, attr.allocated, attr.request, attr.nonJDosModelRequest.String(), attr.elastic, attr.share)
 	}
 
 	// Record metrics
@@ -611,13 +641,14 @@ func (cp *capacityPlugin) newQueueAttr(queue *api.QueueInfo) *queueAttr {
 		ancestors: make([]api.QueueID, 0),
 		children:  make(map[api.QueueID]*queueAttr),
 
-		deserved:   api.NewResource(queue.Queue.Spec.Deserved),
-		allocated:  api.EmptyResource(),
-		request:    api.EmptyResource(),
-		elastic:    api.EmptyResource(),
-		inqueue:    api.EmptyResource(),
-		guarantee:  api.EmptyResource(),
-		capability: api.EmptyResource(),
+		deserved:            api.NewResource(queue.Queue.Spec.Deserved),
+		allocated:           api.EmptyResource(),
+		request:             api.EmptyResource(),
+		elastic:             api.EmptyResource(),
+		inqueue:             api.EmptyResource(),
+		guarantee:           api.EmptyResource(),
+		capability:          api.EmptyResource(),
+		nonJDosModelRequest: api.EmptyResource(),
 	}
 	if len(queue.Queue.Spec.Capability) != 0 {
 		attr.capability = api.NewResource(queue.Queue.Spec.Capability)
@@ -737,14 +768,43 @@ func (cp *capacityPlugin) isLeafQueue(queueID api.QueueID) bool {
 
 func (cp *capacityPlugin) queueAllocatable(queue *api.QueueInfo, candidate *api.TaskInfo) bool {
 	attr := cp.queueOpts[queue.UID]
-	futureUsed := attr.allocated.Clone().Add(candidate.Resreq)
-	allocatable := futureUsed.LessEqualWithDimension(attr.realCapability, candidate.Resreq)
+	if queue.IsJDosDeviceMapQueue() && !candidate.HasJDosDeviceModelLabel() {
+		setLabel := cp.setJDosDeviceLabel(queue, attr, candidate)
+		klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>.", candidate.Pod.Labels[api.JDosDeviceModelLabel], queue.Name, setLabel)
+	}
+
+	candidateResreq := candidate.ResreqReplaceScalar(queue.JDosDeviceMap, "")
+	futureUsed := attr.allocated.Clone().Add(candidateResreq)
+	allocatable := futureUsed.LessEqualWithDimension(attr.realCapability, candidateResreq)
 	if !allocatable {
-		klog.V(3).Infof("Queue <%v>: realCapability <%v>, allocated <%v>; Candidate <%v>: resource request <%v>",
-			queue.Name, attr.realCapability, attr.allocated, candidate.Name, candidate.Resreq)
+		klog.V(3).Infof("Queue <%v>: realCapability <%v>, allocated <%v>; Candidate <%v>: resource request <%v>; allocatable <false>",
+			queue.Name, attr.realCapability, attr.allocated, candidate.Name, candidateResreq)
 	}
 
 	return allocatable
+}
+
+func (cp *capacityPlugin) setJDosDeviceLabel(queue *api.QueueInfo, attr *queueAttr, task *api.TaskInfo) bool {
+	ti := task.Clone()
+	for devModel, resourceMap := range queue.JDosDeviceMap {
+		if !ti.Resreq.IsMatchScalarResource(resourceMap) {
+			continue
+		}
+		resreq := ti.ResreqReplaceScalar(queue.JDosDeviceMap, devModel)
+		resreq.MilliCPU = 0
+		resreq.Memory = 0
+		futureUsed := attr.allocated.Clone().Add(resreq)
+		allocatable := futureUsed.LessEqualWithDimension(attr.realCapability, resreq)
+		if allocatable {
+			task.JDosDeviceModelByVolcano = true
+			task.Pod.Labels[api.JDosDeviceModelLabel] = devModel
+			task.Pod.Annotations[api.JDosSetDeviceModelAnnotation] = "true"
+			return true
+		}
+	}
+	klog.V(3).Infof("Queue <%v>: realCapability <%v>, allocated <%v>; Candidate <%v>: resource request <%v>, setJDosDeviceLabel <false>",
+		queue.Name, attr.realCapability, attr.allocated, task.Name, task.Resreq)
+	return false
 }
 
 func (cp *capacityPlugin) checkQueueAllocatableHierarchically(ssn *framework.Session, queue *api.QueueInfo, candidate *api.TaskInfo) bool {

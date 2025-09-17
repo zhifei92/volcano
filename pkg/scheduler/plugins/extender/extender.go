@@ -189,7 +189,12 @@ func (ep *extenderPlugin) OnSessionOpen(ssn *framework.Session) {
 				return nil
 			}
 
-			resp := &PredicateResponse{}
+			// Wrap PredicateResponse is used to return the card model of the migrated device.
+			resp := &struct {
+				PredicateResponse
+				Device   string `json:"device"`
+				NodeName string `json:"nodeName"`
+			}{}
 			err := ep.send(ep.config.predicateVerb, &PredicateRequest{Task: task, Node: node}, resp)
 			if err != nil {
 				klog.Warningf("Predicate failed with error %v", err)
@@ -201,6 +206,13 @@ func (ep *extenderPlugin) OnSessionOpen(ssn *framework.Session) {
 			}
 
 			if len(resp.ErrorMessage) == 0 {
+				if resp.Code == api.JDosMigration {
+					task.SetJDosMigrationInfo(api.JDosMigrationInfo{
+						JDosDeviceMigration:   true,
+						JDosMigrationNodeName: resp.NodeName,
+						JDosMigrationGPUModel: resp.Device,
+					})
+				}
 				return nil
 			}
 			// keep compatibility with old behavior: error messages length is not zero,

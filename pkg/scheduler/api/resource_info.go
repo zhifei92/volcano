@@ -785,3 +785,43 @@ func ExceededPart(left, right *Resource) *Resource {
 	diff, _ := left.Diff(right, Zero)
 	return diff
 }
+
+// ReplaceScalar replcace old scalar key with new scalar key
+func (r *Resource) ReplaceScalar(resourceMap map[v1.ResourceName]v1.ResourceName) *Resource {
+	if resourceMap == nil {
+		return r
+	}
+
+	rDeepCopy := r.Clone()
+	for name, quant := range rDeepCopy.ScalarResources {
+		if realName, ok := resourceMap[name]; ok {
+			rDeepCopy.ScalarResources[realName] = quant
+			delete(rDeepCopy.ScalarResources, name)
+		}
+	}
+	return rDeepCopy
+}
+
+func (r *Resource) IsMatchScalarResource(resourceMap map[v1.ResourceName]v1.ResourceName) bool {
+	if resourceMap == nil {
+		return false
+	}
+
+	for name := range r.ScalarResources {
+		if _, ok := resourceMap[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Resource) ScalarResourcesAdd(rr *Resource) *Resource {
+	for rName, rQuant := range rr.ScalarResources {
+		if r.ScalarResources == nil {
+			r.ScalarResources = map[v1.ResourceName]float64{}
+		}
+		r.ScalarResources[rName] += rQuant
+	}
+
+	return r
+}

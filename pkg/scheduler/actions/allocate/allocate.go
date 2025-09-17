@@ -401,6 +401,15 @@ func (alloc *Action) allocateResourcesForTasks(tasks *util.PriorityQueue, job *a
 			predicateNodes, fitErrors = ph.PredicateNodes(task, allNodes, alloc.predicate, alloc.enablePredicateErrorCache)
 		}
 
+		migrationInfo := task.GetJDosMigrationInfo()
+		if migrationInfo.JDosDeviceMigration {
+			if !ssn.Allocatable(queue, task) {
+				klog.V(3).Infof("Queue <%s> is overused when considering task <%s/%s>: migration message <%s/%s>, ignore it.",
+					queue.Name, task.Namespace, task.Name, migrationInfo.JDosMigrationGPUModel, migrationInfo.JDosMigrationNodeName)
+				continue
+			}
+		}
+
 		if len(predicateNodes) == 0 {
 			// TODO: Need to add PostFilter extension point implementation here. For example, the DRA plugin includes the PostFilter extension point,
 			// but the DRA's PostFilter only occurs in extreme error conditions: Suppose a pod uses two claims. In the first scheduling attempt,

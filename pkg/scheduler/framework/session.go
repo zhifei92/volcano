@@ -237,10 +237,13 @@ func updateQueueStatus(ssn *Session) {
 		allocatedResources[queueID] = &api.Resource{}
 	}
 	for _, job := range ssn.Jobs {
+		queueInfo := ssn.Queues[job.Queue]
 		for status, tasks := range job.TaskStatusIndex {
 			if api.AllocatedStatus(status) {
 				for _, task := range tasks {
-					allocatedResources[job.Queue].Add(task.Resreq)
+					taskResreq := task.ResreqReplaceScalar(queueInfo.JDosDeviceMap, "")
+					klog.V(5).InfoS("update queue status", "queue", job.Queue, "task", task.UID, "status", status, "resreq", taskResreq, "queueInfo.JDosDeviceMap", queueInfo.JDosDeviceMap, "labels", task.Pod.Labels, "queueAnnotations", queueInfo.Queue.Annotations)
+					allocatedResources[job.Queue].Add(taskResreq)
 					// recursively updates the allocated resources of parent queues
 					queue := ssn.Queues[job.Queue].Queue
 					// compatibility unit testing
@@ -249,7 +252,7 @@ func updateQueueStatus(ssn *Session) {
 						if queue.Spec.Parent != "" {
 							parent = queue.Spec.Parent
 						}
-						allocatedResources[api.QueueID(parent)].Add(task.Resreq)
+						allocatedResources[api.QueueID(parent)].Add(taskResreq)
 
 						if parent == string(rootQueue) {
 							break

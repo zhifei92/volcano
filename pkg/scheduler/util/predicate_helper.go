@@ -87,6 +87,14 @@ func (ph *predicateHelper) PredicateNodes(task *api.TaskInfo, nodes []*api.NodeI
 			return
 		}
 
+		jDosMigrationInfo := task.GetJDosMigrationInfo()
+		if jDosMigrationInfo.JDosDeviceMigration {
+			if node.Name != jDosMigrationInfo.JDosMigrationNodeName {
+				klog.V(4).ErrorS(nil, "JDos device migration node name mismatch", "task", task.Name, "expected", node.Name, "migration", jDosMigrationInfo.JDosMigrationNodeName)
+				return
+			}
+		}
+
 		//check if the number of found nodes is more than the numNodesTofind
 		length := atomic.AddInt32(&numFoundNodes, 1)
 		if length > numNodesToFind {
@@ -103,6 +111,12 @@ func (ph *predicateHelper) PredicateNodes(task *api.TaskInfo, nodes []*api.NodeI
 	//processedNodes := int(numFoundNodes) + len(filteredNodesStatuses) + len(failedPredicateMap)
 	lastProcessedNodeIndex = (lastProcessedNodeIndex + int(processedNodes)) % allNodes
 	predicateNodes = predicateNodes[:numFoundNodes]
+
+	jDosMigrationInfo := task.GetJDosMigrationInfo()
+	if jDosMigrationInfo.JDosDeviceMigration {
+		task.Pod.Annotations[api.JDosDeviceMigrationAnnotation] = "true"
+		task.Pod.Annotations[api.JDosDeviceModelLabel] = jDosMigrationInfo.JDosMigrationGPUModel
+	}
 	return predicateNodes, fe
 }
 

@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -141,6 +142,31 @@ type TaskInfo struct {
 	CustomBindErrHandler func() error `json:"-"`
 	// CustomBindErrHandlerSucceeded indicates whether CustomBindErrHandler is executed successfully.
 	CustomBindErrHandlerSucceeded bool
+
+	jDosMigrationInfo        atomic.Value
+	JDosDeviceModelByVolcano bool
+	JDosDeviceMap            *map[string]map[v1.ResourceName]v1.ResourceName
+}
+
+func (ti *TaskInfo) SetJDosMigrationInfo(info JDosMigrationInfo) {
+	ti.jDosMigrationInfo.Store(info)
+}
+
+func (ti *TaskInfo) GetJDosMigrationInfo() JDosMigrationInfo {
+	if info, ok := ti.jDosMigrationInfo.Load().(JDosMigrationInfo); ok {
+		return info
+	}
+	return JDosMigrationInfo{}
+}
+
+type JDosMigrationInfo struct {
+	// JDosDeviceMigration indicates whether GPU or other devices need to be migrated.
+	// if true, GPU or other devices need to be migrated.
+	// Currently, this value is returned only by the extender.
+	JDosDeviceMigration bool
+	// JDosMigrationGPUModel indicates the GPU model to be migrated.
+	JDosMigrationGPUModel string
+	JDosMigrationNodeName string
 }
 
 func getJobID(pod *v1.Pod) JobID {
@@ -303,6 +329,32 @@ func hasRestartableInitContainer(pod *v1.Pod) bool {
 		}
 	}
 	return false
+}
+
+func (ti *TaskInfo) ResreqReplaceScalar(deviceMap map[string]map[v1.ResourceName]v1.ResourceName, defaultModel string) *Resource {
+	if len(deviceMap) == 0 {
+		return ti.Resreq
+	}
+
+	podDeviceModel := defaultModel
+	if len(defaultModel) == 0 {
+		podDeviceModel = ti.Pod.Labels[JDosDeviceModelLabel]
+	}
+
+	resourceMap, ok := deviceMap[podDeviceModel]
+	if !ok {
+		return ti.Resreq
+	}
+	if ti.JDosDeviceMap == nil {
+		ti.JDosDeviceMap = &deviceMap
+	}
+
+	return ti.Resreq.ReplaceScalar(resourceMap)
+}
+
+func (ti *TaskInfo) HasJDosDeviceModelLabel() bool {
+	_, ok := ti.Pod.Labels[JDosDeviceModelLabel]
+	return ok
 }
 
 // String returns the taskInfo details in a string
@@ -632,9 +684,9 @@ func (ji *JobInfo) deleteTaskIndex(ti *TaskInfo) {
 // DeleteTaskInfo is used to delete a task from a job
 func (ji *JobInfo) DeleteTaskInfo(ti *TaskInfo) error {
 	if task, found := ji.Tasks[ti.UID]; found {
-		ji.TotalRequest.Sub(task.Resreq)
+		ji.TotalRequest.Sub(ti.Resreq)
 		if AllocatedStatus(task.Status) {
-			ji.Allocated.Sub(task.Resreq)
+			ji.Allocated.Sub(ti.Resreq)
 		}
 		delete(ji.Tasks, task.UID)
 		ji.deleteTaskIndex(task)

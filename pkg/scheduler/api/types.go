@@ -156,6 +156,9 @@ const (
 	// There is a Pending status in k8s.
 	// Pending means that the scheduling process is finished successfully,
 	// but the plugin wants to stop the scheduling cycle/binding cycle here.
+
+	// JDosMigration indicates JDos GPU card migration, which is currently returned only through the extender。
+	JDosMigration
 )
 
 type Status struct {
