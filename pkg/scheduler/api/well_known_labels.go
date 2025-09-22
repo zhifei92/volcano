@@ -53,7 +53,7 @@ const (
 
 	// JDosDeviceMapAnnotation is the annotation key used to record the device map
 	JDosDeviceMapAnnotation       = "jdos.jd.com/device-map"
-	JDosSetDeviceModelAnnotation  = "chogori.queue/device-model-by-volcano"
+	JDosSetDeviceModelAnnotation  = "jdos.jd.com/device-model-by-volcano"
 	JDosDeviceMigrationAnnotation = "jdos.jd.com/device-migration"
 
 	// JDosDeviceModelLabel is the label key used to record the device model
