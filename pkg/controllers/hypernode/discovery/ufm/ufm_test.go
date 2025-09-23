@@ -197,7 +197,7 @@ func TestUfmDiscoverer_Start(t *testing.T) {
 				tc.config.Config["endpoint"] = serverBaseURL
 			}
 
-			u := NewUFMDiscoverer(tc.config, fakeClient)
+			u := NewUFMDiscoverer(tc.config, fakeClient, nil)
 			outputCh, err := u.Start()
 			if tc.expectedError {
 				assert.Error(t, err)

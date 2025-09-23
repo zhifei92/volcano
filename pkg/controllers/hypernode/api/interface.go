@@ -21,6 +21,7 @@ import (
 	"sync"
 
 	clientset "k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 
 	topologyv1alpha1 "volcano.sh/apis/pkg/apis/topology/v1alpha1"
 )
@@ -39,7 +40,7 @@ type Discoverer interface {
 }
 
 // DiscovererConstructor is a function type used to create instances of specific discoverer source
-type DiscovererConstructor func(cfg DiscoveryConfig, kubeClient clientset.Interface) Discoverer
+type DiscovererConstructor func(cfg DiscoveryConfig, kubeClient clientset.Interface, nodeLister listersv1.NodeLister) Discoverer
 
 var (
 	mutex              sync.Mutex
@@ -55,7 +56,7 @@ func RegisterDiscoverer(source string, constructor DiscovererConstructor) {
 }
 
 // NewDiscoverer creates a new discoverer instance based on source
-func NewDiscoverer(cfg DiscoveryConfig, kubeClient clientset.Interface) (Discoverer, error) {
+func NewDiscoverer(cfg DiscoveryConfig, kubeClient clientset.Interface, nodeLister listersv1.NodeLister) (Discoverer, error) {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -63,5 +64,5 @@ func NewDiscoverer(cfg DiscoveryConfig, kubeClient clientset.Interface) (Discove
 	if !exists {
 		return nil, fmt.Errorf("unsupported discoverer type: %s", cfg.Source)
 	}
-	return constructor(cfg, kubeClient), nil
+	return constructor(cfg, kubeClient, nodeLister), nil
 }

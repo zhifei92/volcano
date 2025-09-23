@@ -18,6 +18,7 @@ package label
 
 import (
 	clientset "k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 
 	topologyv1alpha1 "volcano.sh/apis/pkg/apis/topology/v1alpha1"
 	"volcano.sh/volcano/pkg/controllers/hypernode/api"
@@ -45,7 +46,7 @@ func (l labelDiscoverer) Name() string {
 	return "label"
 }
 
-func NewLabelDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface) api.Discoverer {
+func NewLabelDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface, nodeLister listersv1.NodeLister) api.Discoverer {
 	return &labelDiscoverer{
 		config: cfg,
 	}

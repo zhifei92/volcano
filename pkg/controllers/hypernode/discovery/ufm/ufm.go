@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	clientset "k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/klog/v2"
 
 	topologyv1alpha1 "volcano.sh/apis/pkg/apis/topology/v1alpha1"
@@ -82,7 +83,7 @@ type ufmDiscoverer struct {
 }
 
 // NewUFMDiscoverer creates a new UFM topology discoverer
-func NewUFMDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface) api.Discoverer {
+func NewUFMDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface, nodeLister listersv1.NodeLister) api.Discoverer {
 	endpoint := cfg.Config["endpoint"].(string)
 	insecureSkipVerify, _ := cfg.Config["insecureSkipVerify"].(bool)
 

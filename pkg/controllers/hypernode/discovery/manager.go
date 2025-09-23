@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	clientset "k8s.io/client-go/kubernetes"
+	listersv1 "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
@@ -63,12 +64,13 @@ type manager struct {
 	stopCh      chan struct{}
 
 	kubeClient clientset.Interface
+	nodeLister listersv1.NodeLister
 
 	resultCh chan Result
 }
 
 // NewManager create a new network topology discovery manager
-func NewManager(configLoader config.Loader, queue workqueue.TypedRateLimitingInterface[string], kubeClient clientset.Interface) Manager {
+func NewManager(configLoader config.Loader, queue workqueue.TypedRateLimitingInterface[string], kubeClient clientset.Interface, nodeLister listersv1.NodeLister) Manager {
 	return &manager{
 		configLoader: configLoader,
 		discoverers:  make(map[string]api.Discoverer),
@@ -76,6 +78,7 @@ func NewManager(configLoader config.Loader, queue workqueue.TypedRateLimitingInt
 		stopCh:       make(chan struct{}),
 		workQueue:    queue,
 		kubeClient:   kubeClient,
+		nodeLister:   nodeLister,
 	}
 }
 
@@ -120,7 +123,7 @@ func (m *manager) startSingleDiscoverer(source string) error {
 		return fmt.Errorf("configuration not found for network topology discovery source: %s", source)
 	}
 
-	discoverer, err := api.NewDiscoverer(*discoveryCfg, m.kubeClient)
+	discoverer, err := api.NewDiscoverer(*discoveryCfg, m.kubeClient, m.nodeLister)
 	if err != nil {
 		return fmt.Errorf("failed to create discoverer: %v", err)
 	}

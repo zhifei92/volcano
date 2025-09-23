@@ -3,6 +3,7 @@ module volcano.sh/volcano
 go 1.23.0
 
 require (
+	coding.jd.com/jcloud-api-gateway/jcloud-sdk-go v0.0.0-20250922121750-99e4be424f12
 	github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6
 	github.com/agiledragon/gomonkey/v2 v2.11.0
 	github.com/cilium/ebpf v0.16.0
@@ -68,6 +69,7 @@ require (
 	github.com/euank/go-kmsg-parser v2.0.0+incompatible // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/godbus/dbus/v5 v5.1.0 // indirect
+	github.com/gofrs/uuid v4.2.0+incompatible // indirect
 	github.com/google/btree v1.0.1 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/karrick/godirwalk v1.17.0 // indirect
