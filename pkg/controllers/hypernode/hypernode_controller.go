@@ -127,7 +127,7 @@ func (hn *hyperNodeController) Initialize(opt *framework.ControllerOption) error
 		hn.configMapName,
 	)
 
-	hn.discoveryManager = discovery.NewManager(configLoader, hn.configMapQueue, hn.kubeClient)
+	hn.discoveryManager = discovery.NewManager(configLoader, hn.configMapQueue, hn.kubeClient, hn.nodeLister)
 
 	// Add event handlers for HyperNode
 	hn.hyperNodeInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
