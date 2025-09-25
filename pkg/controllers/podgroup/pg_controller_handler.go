@@ -35,12 +35,19 @@ import (
 	batchv1alpha1 "volcano.sh/apis/pkg/apis/batch/v1alpha1"
 	"volcano.sh/apis/pkg/apis/helpers"
 	scheduling "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
-	topologyv1alpha1 "volcano.sh/apis/pkg/apis/topology/v1alpha1"
 	"volcano.sh/volcano/pkg/controllers/util"
 )
 
 const (
 	controllerRevisionHashLabelKey = "controller-revision-hash"
+
+	// NetworkTopologyModeAnnotationKey is the annotation key for specifying the network topology mode.
+	// Value should be a string representing the desired mode (e.g., "hard", "soft").
+	NetworkTopologyModeAnnotationKey = "volcano.sh/network-topology-mode"
+
+	// NetworkTopologyHighestTierAnnotationKey is the annotation key for network topology highest tier
+	// Value should be an integer representing the highest tier allowed
+	NetworkTopologyHighestTierAnnotationKey = "volcano.sh/network-topology-highest-tier"
 )
 
 type podRequest struct {
@@ -430,8 +437,8 @@ func parseNetworkTopologyFromPod(pod *v1.Pod) *scheduling.NetworkTopologySpec {
 	}
 
 	// Check if any NetworkTopology annotations are present
-	modeStr, modeExists := annotations[topologyv1alpha1.NetworkTopologyModeAnnotationKey]
-	tierStr, tierExists := annotations[topologyv1alpha1.NetworkTopologyHighestTierAnnotationKey]
+	modeStr, modeExists := annotations[NetworkTopologyModeAnnotationKey]
+	tierStr, tierExists := annotations[NetworkTopologyHighestTierAnnotationKey]
 
 	if !modeExists && !tierExists {
 		return nil

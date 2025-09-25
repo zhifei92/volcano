@@ -37,7 +37,6 @@ import (
 
 	vcbatch "volcano.sh/apis/pkg/apis/batch/v1alpha1"
 	scheduling "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
-	topologyv1alpha1 "volcano.sh/apis/pkg/apis/topology/v1alpha1"
 	vcclient "volcano.sh/apis/pkg/client/clientset/versioned/fake"
 	informerfactory "volcano.sh/apis/pkg/client/informers/externalversions"
 	"volcano.sh/volcano/pkg/controllers/framework"
@@ -1136,8 +1135,8 @@ func TestBuildPodGroupFromPodWithNetworkTopology(t *testing.T) {
 					Name:      "test-pod",
 					Namespace: namespace,
 					Annotations: map[string]string{
-						topologyv1alpha1.NetworkTopologyModeAnnotationKey:        "hard",
-						topologyv1alpha1.NetworkTopologyHighestTierAnnotationKey: "2",
+						NetworkTopologyModeAnnotationKey:        "hard",
+						NetworkTopologyHighestTierAnnotationKey: "2",
 					},
 				},
 				Spec: v1.PodSpec{
@@ -1161,7 +1160,7 @@ func TestBuildPodGroupFromPodWithNetworkTopology(t *testing.T) {
 					Name:      "test-pod",
 					Namespace: namespace,
 					Annotations: map[string]string{
-						topologyv1alpha1.NetworkTopologyModeAnnotationKey: "soft",
+						NetworkTopologyModeAnnotationKey: "soft",
 					},
 				},
 				Spec: v1.PodSpec{
@@ -1185,7 +1184,7 @@ func TestBuildPodGroupFromPodWithNetworkTopology(t *testing.T) {
 					Name:      "test-pod",
 					Namespace: namespace,
 					Annotations: map[string]string{
-						topologyv1alpha1.NetworkTopologyHighestTierAnnotationKey: "1",
+						NetworkTopologyHighestTierAnnotationKey: "1",
 					},
 				},
 				Spec: v1.PodSpec{
@@ -1227,8 +1226,8 @@ func TestBuildPodGroupFromPodWithNetworkTopology(t *testing.T) {
 					Name:      "test-pod",
 					Namespace: namespace,
 					Annotations: map[string]string{
-						topologyv1alpha1.NetworkTopologyModeAnnotationKey:        "invalid",
-						topologyv1alpha1.NetworkTopologyHighestTierAnnotationKey: "3",
+						NetworkTopologyModeAnnotationKey:        "invalid",
+						NetworkTopologyHighestTierAnnotationKey: "3",
 					},
 				},
 				Spec: v1.PodSpec{
