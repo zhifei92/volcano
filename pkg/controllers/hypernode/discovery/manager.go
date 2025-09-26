@@ -32,6 +32,7 @@ import (
 	"volcano.sh/volcano/pkg/controllers/hypernode/api"
 	"volcano.sh/volcano/pkg/controllers/hypernode/config"
 
+	_ "volcano.sh/volcano/pkg/controllers/hypernode/discovery/jdhpc"
 	_ "volcano.sh/volcano/pkg/controllers/hypernode/discovery/ufm"
 )
 
