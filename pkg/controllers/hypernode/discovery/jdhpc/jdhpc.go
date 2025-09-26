@@ -74,7 +74,7 @@ func NewJDHPCDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface,
 		timeout = cfg.Config["timeout"].(time.Duration)
 	}
 	if cfg.Config["scheme"] != nil {
-		scheme = cfg.Config["scheme"].(time.Duration)
+		scheme = cfg.Config["scheme"].(string)
 	}
 
 	jdhpc := &jdHPCDiscoverer{
