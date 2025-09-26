@@ -40,6 +40,7 @@ func init() {
 // jdHPCDiscoverer implements the Discoverer interface for JD HPC API
 type jdHPCDiscoverer struct {
 	endpoint          string
+	scheme            string
 	regionId          string
 	vpcId             string
 	zones             []string
@@ -53,7 +54,7 @@ type jdHPCDiscoverer struct {
 
 // NewJDHPCDiscoverer creates a new JD HPC topology discoverer
 func NewJDHPCDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface, nodeLister listersv1.NodeLister) api.Discoverer {
-	var endpoint, regionId, vpcId string
+	var endpoint, regionId, vpcId, scheme string
 	var zones []string
 	var timeout time.Duration
 
@@ -72,9 +73,13 @@ func NewJDHPCDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface,
 	if cfg.Config["timeout"] != nil {
 		timeout = cfg.Config["timeout"].(time.Duration)
 	}
+	if cfg.Config["scheme"] != nil {
+		scheme = cfg.Config["scheme"].(time.Duration)
+	}
 
 	jdhpc := &jdHPCDiscoverer{
 		endpoint:          endpoint,
+		scheme:            scheme,
 		regionId:          regionId,
 		vpcId:             vpcId,
 		zones:             zones,
@@ -103,8 +108,12 @@ func NewJDHPCDiscoverer(cfg api.DiscoveryConfig, kubeClient clientset.Interface,
 	if jdhpc.timeout != 0 {
 		jdhpc.timeout = hpcClient.Config.Timeout
 	}
+	if jdhpc.scheme == "" {
+		jdhpc.scheme = hpcClient.Config.Scheme
+	}
 	hpcClient.Config.SetEndpoint(jdhpc.endpoint)
 	hpcClient.Config.SetTimeout(jdhpc.timeout)
+	hpcClient.Config.SetScheme(jdhpc.scheme)
 	jdhpc.client = hpcClient
 
 	klog.InfoS("JD HPC discoverer initialized")
@@ -121,7 +130,9 @@ func (jd *jdHPCDiscoverer) Start() (chan []*topologyv1alpha1.HyperNode, error) {
 	klog.InfoS("Starting JD HPC network topology discovery",
 		"endpoint", jd.endpoint,
 		"interval", jd.discoveryInterval,
-		"timeout", jd.timeout)
+		"timeout", jd.timeout,
+		"scheme", jd.scheme,
+	)
 
 	// Create the output channel that this discoverer will manage
 	outputCh := make(chan []*topologyv1alpha1.HyperNode, 10)
