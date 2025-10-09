@@ -21,7 +21,6 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
 	"math"
-
 	"volcano.sh/apis/pkg/apis/scheduling"
 
 	"volcano.sh/volcano/pkg/scheduler/api"
@@ -129,7 +128,7 @@ func (cp *capacityPlugin) OnSessionOpen(ssn *framework.Session) {
 			queue := ssn.Queues[job.Queue]
 			if queue.IsJDosDeviceMapQueue() && !reclaimee.HasJDosDeviceModelLabel() {
 				setLabel := cp.setJDosDeviceLabel(queue, attr, reclaimee)
-				klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>.", reclaimee.Pod.Labels[api.JDosDeviceModelLabel], queue.Name, setLabel)
+				klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>, %v.", reclaimee.Name, api.JDosDeviceModelLabel, reclaimee.Pod.Labels[api.JDosDeviceModelLabel], setLabel)
 			}
 			reclaimeeResreq := reclaimee.ResreqReplaceScalar(queue.JDosDeviceMap, "")
 			exceptReclaimee := allocated.Clone().Sub(reclaimeeResreq)
@@ -161,7 +160,7 @@ func (cp *capacityPlugin) OnSessionOpen(ssn *framework.Session) {
 
 		if queue.IsJDosDeviceMapQueue() && !task.HasJDosDeviceModelLabel() {
 			setLabel := cp.setJDosDeviceLabel(queue, attr, task)
-			klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>.", task.Pod.Labels[api.JDosDeviceModelLabel], queue.Name, setLabel)
+			klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>, %v.", task.Name, api.JDosDeviceModelLabel, task.Pod.Labels[api.JDosDeviceModelLabel], setLabel)
 		}
 		taskResreq := task.ResreqReplaceScalar(queue.JDosDeviceMap, "")
 		futureUsed := attr.allocated.Clone().Add(taskResreq)
@@ -766,11 +765,14 @@ func (cp *capacityPlugin) isLeafQueue(queueID api.QueueID) bool {
 	return len(cp.queueOpts[queueID].children) == 0
 }
 
-func (cp *capacityPlugin) queueAllocatable(queue *api.QueueInfo, candidate *api.TaskInfo) bool {
+func (cp *capacityPlugin) queueAllocatable(ssn *framework.Session, queue *api.QueueInfo, candidate *api.TaskInfo) bool {
 	attr := cp.queueOpts[queue.UID]
 	if queue.IsJDosDeviceMapQueue() && !candidate.HasJDosDeviceModelLabel() {
 		setLabel := cp.setJDosDeviceLabel(queue, attr, candidate)
-		klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>.", candidate.Pod.Labels[api.JDosDeviceModelLabel], queue.Name, setLabel)
+		if !setLabel {
+			ssn.RecordPodEvent(candidate, v1.EventTypeWarning, string(scheduling.PodGroupUnschedulableType), "The pod does not specify chogori.queue/device-model, and the queue resource quota is insufficient.")
+		}
+		klog.V(3).Infof("Task <%s> does not have JDos device model label, set model label <%s/%v>, %v.", candidate.Name, api.JDosDeviceModelLabel, candidate.Pod.Labels[api.JDosDeviceModelLabel], setLabel)
 	}
 
 	candidateResreq := candidate.ResreqReplaceScalar(queue.JDosDeviceMap, "")
@@ -812,11 +814,11 @@ func (cp *capacityPlugin) checkQueueAllocatableHierarchically(ssn *framework.Ses
 	list := append(cp.queueOpts[queue.UID].ancestors, queue.UID)
 	// Check whether the candidate task can be allocated to the queue and all its ancestors.
 	for i := len(list) - 1; i >= 0; i-- {
-		if !cp.queueAllocatable(ssn.Queues[list[i]], candidate) {
+		if !cp.queueAllocatable(ssn, ssn.Queues[list[i]], candidate) {
 			// If log level is 5, print the information of all queues from leaf to ancestor.
 			if klog.V(5).Enabled() {
 				for j := i - 1; j >= 0; j-- {
-					cp.queueAllocatable(ssn.Queues[list[j]], candidate)
+					cp.queueAllocatable(ssn, ssn.Queues[list[j]], candidate)
 				}
 			}
 			return false

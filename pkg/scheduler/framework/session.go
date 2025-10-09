@@ -758,6 +758,15 @@ func (ssn *Session) RecordPodGroupEvent(podGroup *api.PodGroup, eventType, reaso
 	ssn.recorder.Eventf(pg, eventType, reason, msg)
 }
 
+// RecordPodEvent records pod events
+func (ssn *Session) RecordPodEvent(task *api.TaskInfo, eventType, reason, msg string) {
+	if task == nil {
+		return
+	}
+
+	ssn.recorder.Eventf(task.Pod, eventType, reason, msg)
+}
+
 // SharedDRAManager returns the shared DRAManager from cache
 func (ssn *Session) SharedDRAManager() k8sframework.SharedDRAManager {
 	return ssn.cache.SharedDRAManager()
