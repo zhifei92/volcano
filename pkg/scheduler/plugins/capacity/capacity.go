@@ -788,10 +788,12 @@ func (cp *capacityPlugin) queueAllocatable(ssn *framework.Session, queue *api.Qu
 
 func (cp *capacityPlugin) setJDosDeviceLabel(queue *api.QueueInfo, attr *queueAttr, task *api.TaskInfo) bool {
 	ti := task.Clone()
+	isNoMatch := true
 	for devModel, resourceMap := range queue.JDosDeviceMap {
 		if !ti.Resreq.IsMatchScalarResource(resourceMap) {
 			continue
 		}
+		isNoMatch = false
 		resreq := ti.ResreqReplaceScalar(queue.JDosDeviceMap, devModel)
 		resreq.MilliCPU = 0
 		resreq.Memory = 0
@@ -803,6 +805,10 @@ func (cp *capacityPlugin) setJDosDeviceLabel(queue *api.QueueInfo, attr *queueAt
 			task.Pod.Annotations[api.JDosSetDeviceModelAnnotation] = "true"
 			return true
 		}
+	}
+	if isNoMatch {
+		klog.V(3).InfoS("The resources requested by the pod do not match the device map in the queue; processing as successful label setting.", "queue", queue.Name, "task", klog.KObj(task.Pod))
+		return isNoMatch
 	}
 	klog.V(3).Infof("Queue <%v>: realCapability <%v>, allocated <%v>; Candidate <%v>: resource request <%v>, setJDosDeviceLabel <false>",
 		queue.Name, attr.realCapability, attr.allocated, task.Name, task.Resreq)
