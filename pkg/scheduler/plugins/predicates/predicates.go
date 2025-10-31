@@ -852,6 +852,10 @@ func handleSkipPredicatePlugin(state fwk.CycleState, pluginName string) bool {
 }
 
 func handleSkipPrePredicatePlugin(status *fwk.Status, state *k8sframework.CycleState, task *api.TaskInfo, pluginName string) error {
+	if status == nil {
+		return nil
+	}
+
 	if state.GetSkipFilterPlugins() == nil {
 		state.SetSkipFilterPlugins(sets.New[string]())
 	}
