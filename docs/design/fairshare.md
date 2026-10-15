@@ -1,44 +1,43 @@
-# Fair share scheduling
+# 公平共享调度
 
-This document covers two related design proposals for fair share scheduling among
-tenants sharing a `Queue`:
+本文档涵盖两个相关的设计提案，用于在同一 `Queue` 内的多个租户之间实现公平共享调度：
 
-1. [Namespace fair share](#namespace-fair-share-2019) (2019, [@lminzhw](http://github.com/lminzhw)) —
-   static per-namespace weights recorded on `ResourceQuota`, compared via a new
-   `NamespaceOrderFn` scheduling-loop stage.
-2. [Per-namespace fair share with decayed usage tracking](#per-namespace-fair-share-with-decayed-usage-tracking-2026)
-   (2026) — a self-contained scheduler plugin that tracks historical resource-seconds per
-   namespace with exponential decay, addressing the same underlying problem without
-   requiring new `Session`/`SchedulerCache` fields or a `NamespaceOrderFn` stage.
+1. [命名空间公平共享](#命名空间公平共享2019)（2019，[@lminzhw](http://github.com/lminzhw)）——
+   记录在 `ResourceQuota` 上的静态每命名空间权重，通过新的
+   `NamespaceOrderFn` 调度循环阶段进行比较。
+2. [基于衰减使用量追踪的每命名空间公平共享](#基于衰减使用量追踪的每命名空间公平共享2026)
+   （2026）——一个自包含的调度器插件，通过指数衰减追踪每个命名空间的历史资源秒数，
+   在不引入新的 `Session`/`SchedulerCache` 字段或 `NamespaceOrderFn` 阶段的情况下，
+   解决相同的底层问题。
 
-For usage instructions (arguments, configuration examples, interaction with other plugins),
-see the [fairshare user guide](../user-guide/how_to_use_fairshare_plugin.md).
+有关使用说明（参数、配置示例、与其他插件的交互），请参阅
+[fairshare 用户指南](../user-guide/how_to_use_fairshare_plugin.md)。
 
 ---
 
-## Namespace fair share (2019)
+## 命名空间公平共享（2019）
 
-[@lminzhw](http://github.com/lminzhw); May 8, 2019
+[@lminzhw](http://github.com/lminzhw)；2019 年 5 月 8 日
 
-### Motivation
+### 动机
 
-`Queue` was introduced in [kube-batch](http://github.com/kubernetes-sigs/kube-batch) to share resources among users.
+`Queue` 在 [kube-batch](http://github.com/kubernetes-sigs/kube-batch) 中被引入，用于在用户之间共享资源。
 
-But, the user in the same `Queue` are equivalent during scheduling. For example, we have a `Queue` contains a small amount of resources, and there are 10 pods belong to UserA and 1000 pods belong to UserB. In this case, pods of UserA would have less probability to bind with node.
+但是，同一个 `Queue` 中的用户在调度时是等价的。例如，我们有一个资源量很少的 `Queue`，其中 UserA 有 10 个 Pod，UserB 有 1000 个 Pod。在这种情况下，UserA 的 Pod 绑定到节点的概率会更低。
 
-So, we need a more fine-grained strategy to balance resource usage among users in the same `Queue`.
+因此，我们需要一种更细粒度的策略来平衡同一 `Queue` 中用户的资源使用。
 
-In consideration of multi-user model in kubernetes, we use namespace to distinguish different user. Each namespace would have its weight to control resources usage.
+考虑到 Kubernetes 的多用户模型，我们使用命名空间来区分不同的用户。每个命名空间都有自己的权重来控制资源使用。
 
-### Function Specification
+### 功能规格
 
-Weight have these features:
-> 1. `Queue` level
-> 2. an `integer` with default value 1
-> 3. record in namespace `quota`
-> 4. higher value means more resources after balancing
+权重具有以下特性：
+> 1. `Queue` 级别
+> 2. 一个 `整数`，默认值为 1
+> 3. 记录在命名空间的 `quota` 中
+> 4. 值越高，平衡后获得的资源越多
 
-#### where is the weight
+#### 权重的位置
 
 ```yaml
 apiVersion: v1
@@ -48,16 +47,16 @@ metadata:
 spec:
   hard:
     limits.memory: 2Gi
-    volcano.sh/namespace.weight: 1  <- this field represent the weight of this namespace
+    volcano.sh/namespace.weight: 1  <- 此字段代表该命名空间的权重
 ```
 
-If many `ResourceQuota` in the same namespace have weight, the weight for this namespace is the highest one of them.
+如果同一命名空间中的多个 `ResourceQuota` 都有权重，则该命名空间的权重取其中的最大值。
 
-This weight should be positive, any invalid value is treated as default value 1.
+该权重必须为正数，任何无效值都将被视为默认值 1。
 
-### Scheduler Framework
+### 调度器框架
 
-Introduce two new fields in SchedulerCache
+在 SchedulerCache 中引入两个新字段
 
 ```go
 type NamespaceInfo struct {
@@ -73,9 +72,9 @@ type SchedulerCache struct {
 }
 ```
 
-The Scheduler will watch the lifecycle of `ResourceQuota` by `quotaInformer`, and refresh the info in `NamespaceInfo`.
+调度器将通过 `quotaInformer` 监听 `ResourceQuota` 的生命周期，并刷新 `NamespaceInfo` 中的信息。
 
-In `openSession` function, we should pass the `NamespaceInfo` through function `cache.Snapshot` into `Session` by using a new filed in `Session`/`ClusterInfo` struct.
+在 `openSession` 函数中，我们应通过 `cache.Snapshot` 函数将 `NamespaceInfo` 传递到 `Session` 中，方法是在 `Session`/`ClusterInfo` 结构体中使用一个新字段。
 
 ```go
 type Session struct {
@@ -90,29 +89,29 @@ type ClusterInfo struct {
 }
 ```
 
-### Allocate Action
+### Allocate 动作
 
-#### Scheduling loop
+#### 调度循环
 
-The behavior of `allocate` action is scheduling job in `Queue` one by one.
+`allocate` 动作的行为是在 `Queue` 中逐个调度作业。
 
-At the beginning of scheduling loop, it will take a job with highest priority from `Queue`. And try to schedule tasks that belong to it until job is ready (matches the minMember) then go to next round.
+在调度循环开始时，它会从 `Queue` 中取出优先级最高的作业，并尝试调度属于该作业的任务，直到作业就绪（满足 minMember），然后进入下一轮。
 
-The priority of job mentioned above is defined by `JobOrder` functions registered by plugins. Such as job ready order of Gang plugin, priority order of Priority plugin, and also the share order of DRF plugin.
+上述作业的优先级由插件注册的 `JobOrder` 函数定义。例如 Gang 插件的作业就绪排序、Priority 插件的优先级排序，以及 DRF 插件的共享排序。
 
 #### JobOrder
 
-Namespace weight `should not` implement with JobOrder func. Because the scheduling of job would affect priority of the others.
+命名空间权重 `不应` 通过 JobOrder 函数实现。因为作业的调度会影响其他作业的优先级。
 
-> e.g.
+> 例如
 >
-> ns1 has job1, job2, ns2 has job3, job4. The original order is job1-job2-job3-job4.
+> ns1 有 job1、job2，ns2 有 job3、job4。原始顺序是 job1-job2-job3-job4。
 >
-> After the scheduling of job1, right order should be job3-job4-job2. But in priority queue, we have no chance to fix the priority for job2
+> 在 job1 被调度后，正确的顺序应该是 job3-job4-job2。但在优先级队列中，我们没有机会修正 job2 的优先级。
 
-#### Namespace Order
+#### 命名空间排序
 
-To add namespace weight, we introduce a new order function named `NamespaceOrder` in `Session`.
+为了添加命名空间权重，我们在 `Session` 中引入一个新的排序函数，名为 `NamespaceOrder`。
 
 ```go
 type Session struct {
@@ -122,75 +121,75 @@ type Session struct {
 }
 ```
 
-The scheduling loop in allocate should change as follows.
+allocate 中的调度循环应作如下修改。
 
-In scheduling loop, firstly, choose a namespace having highest priority by calling `NamespaceOrderFn`, and then choose a job having highest priority using `JobOrderFn` in this namespace.
+在调度循环中，首先通过调用 `NamespaceOrderFn` 选择优先级最高的命名空间，然后在该命名空间中使用 `JobOrderFn` 选择优先级最高的作业。
 
-After scheduling of job, push the namespace and job back to priority queue in order to refresh its priority. Because once a job is scheduled, assigned resource may decrease the priority of this namespace, the other jobs in the same namespace may be scheduled later.
+作业调度完成后，将命名空间和作业按顺序推回优先级队列以刷新其优先级。因为一旦作业被调度，已分配的资源可能会降低该命名空间的优先级，同一命名空间中的其他作业可能会被延后调度。
 
-Always assigning resources to namespace with highest priority (lower resource usage) in every turn will make the resource balanced.
+在每一轮中始终将资源分配给优先级最高（资源使用量较低）的命名空间，将使资源达到平衡。
 
-### DRF plugin
+### DRF 插件
 
-DRF plugin use preemption and order of job to balance resource among jobs. The `share` in this plugin is defined as resource usage, the higher `share` means this job occupies the more resource now.
+DRF 插件使用抢占和作业排序来平衡作业间的资源。该插件中的 `share` 定义为资源使用量，`share` 越高表示该作业当前占用的资源越多。
 
-#### Namespace Compare
+#### 命名空间比较
 
-To introduce namespace weight into this plugin, we should define how to compare namespace having weight firstly.
+为了将命名空间权重引入该插件，我们首先需要定义如何比较具有权重的命名空间。
 
-For namespace n1 having weight w1 and namespace n2 having weight w2, we can compute the `share` of resource and recorded as u1 and u2. Now, the resource usage of n1 less than n2 can be defined as (u1 / w1 < u2 / w2)
+对于权重为 w1 的命名空间 n1 和权重为 w2 的命名空间 n2，我们可以计算资源的 `share` 并记为 u1 和 u2。现在，n1 的资源使用量小于 n2 可以定义为 (u1 / w1 < u2 / w2)
 
-`e.g.` ns1 having weight w1=2 use 6cpu, ns2 having weight w2=1 use 2cpu. In the scope of cpu, the ns1 use less resource than ns2. (6 / 3 < 3 / 1)
+`例如` 权重 w1=2 的 ns1 使用 6cpu，权重 w2=1 的 ns2 使用 2cpu。在 cpu 范围内，ns1 使用的资源比 ns2 少。(6 / 3 < 3 / 1)
 
-#### Namespace Order
+#### 命名空间排序
 
-Register `NamespaceOrder` function using the strategy mentioned above.
+使用上述策略注册 `NamespaceOrder` 函数。
 
-#### preemption
+#### 抢占
 
-> The `preempt` action is disabled now. Do this later.
+> `preempt` 动作目前已禁用。此项后续再做。
 
-In the `preemption` function now, strategy is just simply comparing the resource share among jobs .
+在当前的 `preemption` 函数中，策略只是简单地比较作业间的资源 share。
 
-After adding namespace weight, we should check namespace of preemptor and preemptee firstly. The job in namespace with less resources can preempt others, or when namespace resource usage are the same, compare share of job instead.
+添加命名空间权重后，我们应首先检查抢占者和被抢占者的命名空间。资源较少的命名空间中的作业可以抢占其他作业，或者当命名空间资源使用量相同时，转而比较作业的 share。
 
-### Feature Interaction
+### 特性交互
 
-#### preempt action
+#### preempt 动作
 
-Preempt is a strategy set to choose victims and finally evict it.
+Preempt 是一组用于选择受害者并最终驱逐它们的策略集合。
 
-The way to choose victims is a function set named `Preemptable` registered by plugins. Such as job ready protection of Gang plugin, special pod protection of Conformance plugin, job share balance strategy of DRF plugin.
+选择受害者的方式是一组由插件注册的名为 `Preemptable` 的函数集合。例如 Gang 插件的作业就绪保护、Conformance 插件的特殊 Pod 保护、DRF 插件的作业 share 平衡策略。
 
-All these plugin would choose some victims respective, and the intersection of them would be the final victim set. So, the choice made by DRF plugin would never break the requirement of others.
+所有这些插件会各自选择一些受害者，它们的交集将成为最终的受害者集合。因此，DRF 插件做出的选择永远不会破坏其他插件的要求。
 
-### short hand
+### 简述
 
-1. Preempt may cause killing of some running pod.
+1. Preempt 可能导致杀死某些正在运行的 Pod。
 
-### Cases:
+### 场景：
 
-- cluster have __16 cpu__, queue and namespace have default weight.
+- 集群有 __16 cpu__，queue 和命名空间均为默认权重。
 
-    | queue | namespace | requested | queue assigned | namespace assigned |
+    | queue | namespace | 请求量 | queue 已分配 | namespace 已分配 |
     | ----- | --------- | --------- | -------------- | ------------------ |
     | q1    | ns1       | 5 cpu     | 8 cpu          | 4 cpu              |
     |       | ns2       | 10 cpu    |                | 4 cpu              |
     | q2    | ns3       | 10 cpu    | 8 cpu          | 6 cpu              |
     |       | ns4       | 2 cpu     |                | 2 cpu              |
 
-- cluster have __16 cpu__, q1 with weight 1, q2 with weight 3. ns1 with weight 3, ns2 have weight 1, ns3 have weight 2, ns4 have weight 6.
+- 集群有 __16 cpu__，q1 权重为 1，q2 权重为 3。ns1 权重为 3，ns2 权重为 1，ns3 权重为 2，ns4 权重为 6。
 
-    | queue | namespace | requested | queue assigned | namespace assigned |
+    | queue | namespace | 请求量 | queue 已分配 | namespace 已分配 |
     | ----- | --------- | --------- | -------------- | ------------------ |
     | q1 w1 | ns1 w3    | 5 cpu     | 4 cpu          | 3 cpu              |
     |       | ns2 w1    | 10 cpu    |                | 1 cpu              |
     | q2 w3 | ns3 w2    | 10 cpu    | 12 cpu         | 10 cpu             |
     |       | ns4 w6    | 2 cpu     |                | 2 cpu              |
 
-- cluster have __16 cpu__, q1 with weight 1, q2 with weight 3. ns1 have weight 2, ns2 have weight 6.
+- 集群有 __16 cpu__，q1 权重为 1，q2 权重为 3。ns1 权重为 2，ns2 权重为 6。
 
-    | queue | namespace | requested | queue assigned | namespace assigned |
+    | queue | namespace | 请求量 | queue 已分配 | namespace 已分配 |
     | ----- | --------- | --------- | -------------- | ------------------ |
     | q1 w1 | ns1 w2    |           | 4 cpu          |                    |
     | q2 w3 | ns1 w2    | 5 cpu     | 12 cpu         | 3 cpu              |
@@ -198,82 +197,77 @@ All these plugin would choose some victims respective, and the intersection of t
 
 ---
 
-## Per-namespace fair share with decayed usage tracking (2026)
+## 基于衰减使用量追踪的每命名空间公平共享（2026）
 
-### Background
+### 背景
 
-Volcano's existing DRF plugin provides dominant resource fairness at the namespace/queue level,
-but it only considers the **current allocation snapshot** — it has no memory of past usage.
-This leads to a well-documented problem in multi-tenant GPU clusters (see [#4165](https://github.com/volcano-sh/volcano/issues/4165)):
+Volcano 现有的 DRF 插件在命名空间/队列层面提供了主导资源公平性，
+但它只考虑**当前分配快照**——没有对历史使用量的记忆。
+这在多租户 GPU 集群中导致了一个有据可查的问题（参见 [#4165](https://github.com/volcano-sh/volcano/issues/4165)）：
 
-- Namespace A submits hundreds of GPU jobs and fills the cluster
-- Namespace B arrives later with a handful of jobs
-- As namespace A's jobs complete, its new pending jobs immediately regain priority
-  (they have equal or lower current allocation), effectively starving namespace B
+- 命名空间 A 提交了数百个 GPU 作业并占满了集群
+- 命名空间 B 稍后带着少量作业到达
+- 随着命名空间 A 的作业完成，其新的待处理作业立即重新获得优先级
+  （它们当前的分配量相等或更低），实际上导致命名空间 B 饥饿
 
-This "submission-order bias" means the first tenant to flood the queue monopolizes resources
-indefinitely, even when other tenants have legitimate demand. SLURM solves this with its
-fair share algorithm that tracks historical usage with exponential decay.
+这种"提交顺序偏差"意味着第一个涌入队列的租户会无限期地垄断资源，
+即使其他租户有正当的需求。SLURM 通过其追踪历史使用量并应用指数衰减的
+公平共享算法解决了这个问题。
 
-This is the same underlying gap the 2019 [Namespace fair share](#namespace-fair-share-2019)
-proposal above targeted, but that design requires new `NamespaceOrderFn` scheduling-loop
-stages and `NamespaceInfo` plumbing through `SchedulerCache`/`Session`/`ClusterInfo` that were
-never landed. The proposal below is intentionally scoped to a single self-contained plugin —
-no framework changes — trading the static, admin-configured `ResourceQuota` weight for a
-usage-based measure that adapts automatically as tenants' consumption rises and falls.
+这与上述 2019 年 [命名空间公平共享](#命名空间公平共享2019)提案针对的是相同的底层缺陷，
+但该设计需要新的 `NamespaceOrderFn` 调度循环阶段以及贯穿
+`SchedulerCache`/`Session`/`ClusterInfo` 的 `NamespaceInfo` 管道改造，而这些从未落地。
+下面的提案有意限定在单个自包含插件内——不需要框架变更——以自动适应租户消耗升降的
+基于使用量的度量，取代静态的、管理员配置的 `ResourceQuota` 权重。
 
-It's also worth calling out an assumption both designs share and that's worth being explicit
-about: Volcano already supports fair sharing *across* queues (via DRF/proportion at the queue
-level). Both the 2019 proposal and this one are about fair sharing **within** a single queue,
-for the case — common when tenants map to namespaces rather than to dedicated queues — where
-multiple tenants submit jobs into the same queue and need to be balanced against each other
-there.
+还有一个两个设计共同具备的假设值得明确指出：Volcano 已经支持跨队列的公平共享
+（通过队列层面的 DRF/proportion）。2019 年提案和本提案都是关于**单个队列内**的
+公平共享，适用于多个租户向同一队列提交作业并需要在那里相互平衡的场景——
+当租户映射到命名空间而非专用队列时，这种情况很常见。
 
-### Proposal
+### 提案
 
-Add a new `fairshare` scheduler plugin that tracks cumulative resource-seconds per namespace
-and applies exponential half-life decay so that past consumption is gradually forgiven.
+新增一个 `fairshare` 调度器插件，追踪每个命名空间的累计资源秒数，
+并应用指数半衰期衰减，使过去的消耗逐渐被宽恕。
 
-### Namespace identity
+### 命名空间身份
 
-Tenants are identified by their job's **namespace** directly — there is no separate "user"
-concept, since not every cluster maps individual users to namespaces one-to-one (a namespace
-may itself represent a team or project shared by several users). No additional labels are
-required.
+租户直接通过其作业的**命名空间**来标识——没有单独的"用户"概念，
+因为并非每个集群都将单个用户一一映射到命名空间（一个命名空间本身可能代表
+一个由多个用户共享的团队或项目）。不需要额外的标签。
 
-### Algorithm
+### 算法
 
-Each scheduling cycle (~1 second):
+每个调度周期（约 1 秒）：
 
-1. **Decay** all historical usage: `usage × 2^(-elapsed / halfLife)`
-2. **Accumulate** running usage: for each allocated task, add `resource_count × elapsed_seconds`
-   to the namespace's cumulative total
-3. **Order** pending jobs via `JobOrderFn`:
-   - **Primary**: Lower cumulative usage wins (with a 1.0 resource-second epsilon for float comparison)
-   - **Secondary**: Fewer currently-running resources wins (within-cycle tiebreaker)
+1. **衰减**所有历史使用量：`usage × 2^(-elapsed / halfLife)`
+2. **累加**运行中的使用量：对于每个已分配的任务，将 `resource_count × elapsed_seconds`
+   加到该命名空间的累计总量上
+3. **排序**待处理作业，通过 `JobOrderFn`：
+   - **主要**：累计使用量较低者胜出（浮点比较使用 1.0 资源秒的 epsilon）
+   - **次要**：当前运行中资源较少者胜出（周期内平局决胜）
 
-### Half-life decay
+### 半衰期衰减
 
-| Time since usage | Remaining weight (4h half-life) |
+| 使用后经过的时间 | 剩余权重（4 小时半衰期） |
 |-----------------|--------------------------------|
-| 0 hours         | 100%                           |
-| 4 hours         | 50%                            |
-| 8 hours         | 25%                            |
-| 12 hours        | 12.5%                          |
-| 24 hours        | 1.6%                           |
+| 0 小时         | 100%                           |
+| 4 小时         | 50%                            |
+| 8 小时         | 25%                            |
+| 12 小时        | 12.5%                          |
+| 24 小时        | 1.6%                           |
 
-A namespace that consumed 10 GPU-hours will see its usage penalty halve every 4 hours of
-inactivity. After 24 hours, the penalty is effectively forgotten.
+一个消耗了 10 GPU 小时的命名空间，其使用惩罚在每 4 小时的非活动期后会减半。
+24 小时后，惩罚实际上已被遗忘。
 
-### State persistence
+### 状态持久化
 
-Volcano recreates plugin instances via `New()` every scheduling cycle, so instance-level
-state is lost between cycles. The fairshare plugin keeps usage history in a single
-package-level struct that survives across cycles:
+Volcano 每个调度周期都会通过 `New()` 重新创建插件实例，因此实例级状态会在
+周期之间丢失。fairshare 插件将使用历史保存在一个跨周期存活的包级结构体中：
 
 ```go
 var state = &fairShareProcessState{
-    usage: make(map[string]map[string]float64), // [queue][namespace] → resource-seconds
+    usage: make(map[string]map[string]float64), // [queue][namespace] → 资源秒数
 }
 
 type fairShareProcessState struct {
@@ -285,30 +279,29 @@ type fairShareProcessState struct {
 }
 ```
 
-`state` is intentionally unguarded by a lock: `OnSessionOpen`/`OnSessionClose` are only
-ever invoked sequentially from the single scheduler goroutine (Volcano's `wait.Until`
-loop never overlaps invocations). If Volcano ever runs sessions concurrently, this needs
-a real redesign, not a reintroduced global lock.
+`state` 有意不加锁保护：`OnSessionOpen`/`OnSessionClose` 只会从
+单一调度器 goroutine 顺序调用（Volcano 的 `wait.Until` 循环从不会重叠调用）。
+如果 Volcano 将来并发运行会话，这需要真正的重新设计，而不是重新引入全局锁。
 
-#### Durable persistence (ConfigMap)
+#### 持久化存储（ConfigMap）
 
-To survive scheduler restarts, the plugin can optionally persist state to a ConfigMap.
-When `fairshare.persistState` is set to `"true"`:
+为了在调度器重启后存活，插件可以选择将状态持久化到 ConfigMap。
+当 `fairshare.persistState` 设置为 `"true"` 时：
 
-1. On the **first scheduling cycle**, `initPersistence` loads any existing state from
-   the ConfigMap into `state.usage` / `state.lastCycle`, guarded by
-   `state.persistenceInitialized` so it only runs once.
-2. **`OnSessionClose`** (called once per scheduling cycle, ~1s) flushes the current state
-   to the ConfigMap whenever at least `flushIntervalSeconds` has elapsed since the last
-   flush (default: 30 seconds). Writes use the ConfigMap's `resourceVersion` for
-   optimistic concurrency. Tying the flush to the session lifecycle rather than a
-   detached goroutine+ticker means persistence stops the moment the plugin stops being
-   invoked (e.g. removed from the tier list via a config hot-reload) — a ticker would
-   otherwise keep writing stale state forever with no shutdown hook.
-3. On restart, the loaded `state.lastCycle` is used to compute the elapsed time and apply
-   the correct decay, so namespaces are not unfairly penalized or forgiven by the downtime.
+1. 在**第一个调度周期**，`initPersistence` 将任何现有状态从
+   ConfigMap 加载到 `state.usage` / `state.lastCycle` 中，由
+   `state.persistenceInitialized` 保护，确保只运行一次。
+2. **`OnSessionClose`**（每个调度周期调用一次，约 1 秒）在距上次刷新
+   至少经过 `flushIntervalSeconds`（默认：30 秒）时，将当前状态
+   刷新到 ConfigMap。写入使用 ConfigMap 的 `resourceVersion` 进行
+   乐观并发控制。将刷新与会话生命周期绑定而不是使用独立的
+   goroutine+ticker，意味着持久化在插件停止被调用的那一刻（例如通过
+   配置热更新从层级列表中移除）就会停止——否则 ticker 会在没有
+   关闭钩子的情况下永远写入过期状态。
+3. 重启时，加载的 `state.lastCycle` 用于计算经过的时间并应用正确的衰减，
+   因此命名空间不会因停机时间而受到不公平的惩罚或宽恕。
 
-The ConfigMap is stored in the scheduler's namespace (default: `volcano-system`):
+ConfigMap 存储在调度器的命名空间中（默认：`volcano-system`）：
 
 ```yaml
 apiVersion: v1
@@ -332,63 +325,63 @@ data:
     }
 ```
 
-**Design considerations:**
+**设计考量：**
 
-- **Leader election**: Volcano already elects a single active scheduler. Only the leader writes.
-- **Data loss window**: At most `flushInterval` seconds of usage data is lost on a crash.
-  With the default 30-second interval and a 4-hour half-life, this is negligible.
-- **Size**: Even with 1000 namespaces across 50 queues, the JSON payload is ~50 KB — well
-  within the 1 MB ConfigMap limit.
-- **Backward compatibility**: Persistence is disabled by default. Existing deployments are
-  unaffected.
+- **领导者选举**：Volcano 已经选举出单一活跃调度器。只有领导者执行写入。
+- **数据丢失窗口**：崩溃时最多丢失 `flushInterval` 秒的使用数据。
+  使用默认的 30 秒间隔和 4 小时半衰期，这可以忽略不计。
+- **大小**：即使有 50 个队列中的 1000 个命名空间，JSON 负载也约 50 KB——远在
+  1 MB 的 ConfigMap 限制之内。
+- **向后兼容性**：持久化默认禁用。现有部署不受影响。
 
-### Scheduler hooks
+### 调度器钩子
 
-| Hook | Purpose |
+| 钩子 | 用途 |
 |------|---------|
-| `JobOrderFn` | Orders jobs by cumulative usage (lower wins), with running-resource tiebreaker |
-| `JobEnqueueableFn` | (Optional) Blocks namespaces at/above their max-min fair share from the scheduling pipeline |
-| `EventHandler` | Tracks allocations/deallocations in real-time during the scheduling cycle |
+| `JobOrderFn` | 按累计使用量排序作业（低者胜出），以运行中资源作为平局决胜 |
+| `JobEnqueueableFn` | （可选）阻止达到或超过其最大最小公平份额的命名空间进入调度流水线 |
+| `EventHandler` | 在调度周期内实时追踪分配/释放 |
 
-### Testing
+### 测试
 
-#### Unit tests (53 tests)
+#### 单元测试（53 个测试）
 
-- Max-min fair share algorithm correctness (single namespace, equal demand, asymmetric demand, progressive elimination)
-- Decay factor math (one/two half-lives, zero elapsed, zero half-life, small elapsed)
-- `decayAllUsage` (halves after one half-life, cleans up negligible entries, multi-queue)
-- Usage ordering (lower usage wins, equal usage falls to running tiebreaker, realistic multi-namespace scenario)
-- Decay scenario (10-hour job decay over 4h and 24h)
-- Helpers (namespace extraction, resource key defaults/overrides)
-- `targetQueues` allowlist behavior (defaults to all queues when unset, restricts to the allowlist when set)
-- Enqueue gate through the real `enqueue` action: a namespace at/above its share is held back whether or not its pending jobs already have pods (`jobTotalResource` and pending demand fall back to `PodGroup.Spec.MinResources` for jobs whose pods have not been created yet, such as vcjobs)
-- `shouldAbstainOrdering` (abstains unless both jobs are in the same targeted queue)
-- A failed persistence flush is retried on the next cycle instead of waiting a full `flushIntervalSeconds`
-- Persistence: flush creates ConfigMap, flush updates existing, load populates globals,
-  load handles missing ConfigMap, load handles empty data, flush→load round-trip,
-  disabled persistence is no-op, corrupt JSON returns error
-- `maybeFlush` rate limiting (disabled is a no-op, first call flushes immediately, a second
-  call within the interval is skipped, flushes again once the interval elapses)
+- 最大最小公平共享算法正确性（单命名空间、等量需求、非对称需求、渐进淘汰）
+- 衰减因子数学（一个/两个半衰期、零经过时间、零半衰期、微小经过时间）
+- `decayAllUsage`（一个半衰期后减半、清理可忽略条目、多队列）
+- 使用量排序（低使用量胜出、等量使用量回退到运行中平局决胜、真实多命名空间场景）
+- 衰减场景（10 小时作业在 4 小时和 24 小时的衰减）
+- 辅助函数（命名空间提取、资源键默认值/覆盖）
+- `targetQueues` 白名单行为（未设置时默认为所有队列，设置时限制为白名单）
+- 通过真实 `enqueue` 动作的入队门控：达到或超过其份额的命名空间被阻止，
+  无论其待处理作业是否已有 Pod（`jobTotalResource` 和待处理需求对尚未创建 Pod 的作业
+  回退到 `PodGroup.Spec.MinResources`，例如 vcjob）
+- `shouldAbstainOrdering`（除非两个作业都在同一目标队列中，否则弃权排序）
+- 持久化刷新失败会在下一个周期重试，而不是等待完整的 `flushIntervalSeconds`
+- 持久化：刷新创建 ConfigMap、刷新更新现有 ConfigMap、加载填充全局变量、
+  加载处理缺失的 ConfigMap、加载处理空数据、刷新→加载往返、
+  禁用持久化为空操作、损坏的 JSON 返回错误
+- `maybeFlush` 速率限制（禁用时为空操作、首次调用立即刷新、
+  间隔内的第二次调用被跳过、间隔过后再次刷新）
 
-#### Integration tests
+#### 集成测试
 
-Validated on a test cluster with 2 GPU nodes and 4 tenant namespaces:
+在具有 2 个 GPU 节点和 4 个租户命名空间的测试集群上验证：
 
-1. **Without decay tracking**: FIFO behavior, last tenant waited ~7 minutes
-2. **With decay tracking**: All tenants got GPUs within ~2 minutes, scheduling rotated between tenants
-3. **Burst asymmetry** (1 tenant = 8 jobs, others = 1 each): Minority tenants' jobs completed within ~2 minutes
-4. **DAG/workflow simulation**: GPU steps interleaved across tenants by cumulative usage
-5. **PriorityClass interaction**: High-priority bypassed fair share as expected
-6. **Scheduler restart**: Running jobs survived, new jobs scheduled fairly post-restart
+1. **无衰减追踪**：FIFO 行为，最后一个租户等待了约 7 分钟
+2. **有衰减追踪**：所有租户在约 2 分钟内获得 GPU，调度在租户间轮转
+3. **突发不对称**（1 个租户 = 8 个作业，其他各 1 个）：少数租户的作业在约 2 分钟内完成
+4. **DAG/工作流模拟**：GPU 步骤按累计使用量在租户间交错
+5. **PriorityClass 交互**：高优先级按预期绕过公平共享
+6. **调度器重启**：运行中的作业存活，重启后新作业公平调度
 
-### Limitations
+### 局限性
 
-- Without `persistState`, state is in-memory only and lost on scheduler restart
-- Namespace-based identity only; no support for arbitrary custom labels (can be extended)
-- ConfigMap persistence has a small data-loss window equal to the flush interval on crashes
-- Fairness is scoped within a queue (as in the 2019 proposal above); this plugin does not
-  change how DRF/proportion balance resources across queues
-- `fairshare` registers no `PreemptableFn`/`ReclaimableFn`; it only reorders the pending
-  queue and (optionally) gates enqueue. It cannot preempt already-running jobs, so a
-  namespace with long-lived running jobs keeps its resources regardless of how stale its
-  usage penalty becomes
+- 不启用 `persistState` 时，状态仅存在于内存中，调度器重启后会丢失
+- 仅支持基于命名空间的身份标识；不支持任意自定义标签（可以扩展）
+- ConfigMap 持久化在崩溃时有一个等于刷新间隔的小数据丢失窗口
+- 公平性限定在队列内（与上述 2019 年提案相同）；此插件不会
+  改变 DRF/proportion 跨队列平衡资源的方式
+- `fairshare` 不注册 `PreemptableFn`/`ReclaimableFn`；它只对待处理队列重新排序，
+  并（可选地）对入队进行门控。它无法抢占已在运行的作业，因此
+  拥有长期运行作业的命名空间会保留其资源，无论其使用惩罚变得多么陈旧
