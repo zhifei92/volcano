@@ -66,6 +66,7 @@ git worktree add ../volcano-v1.9.0  v1.9.0
 | 5 | [03 · 网络拓扑与 SubJob](./03-network-topology-hypernode-subjob.md) | HyperNode 怎么建？hard 和 soft 模式分别怎么调度？ | 1h（需要拓扑调度时再读） |
 | 6 | [06 · 全景速查](./06-landscape-components-plugins.md) | 多了哪些二进制、控制器、插件、action、类型？ | 随时查阅 |
 | 7 | [07 · allocate 路径 A 深入分析](./07-allocate-path-a-deep-dive.md) | 普通作业在 allocate 里每一步发生了什么？任务和作业在什么情况下会被"丢掉"？内部功能该挂在哪？ | 1h（读完 01 之后） |
+| 8 | [08 · 拓扑调度、抢占、回收深入分析](./08-topology-preempt-reclaim-deep-dive.md) | 框架为拓扑和驱逐做了哪些准备？四个驱逐 action 怎么分工？gang 驱逐和 allocate 之间怎么交接？有哪些坑？（基于 v1.16.0-rc.0 行号） | 1.5h（读完 02、03、04 之后） |
 
 ## 3. 读源码的最短路径
 

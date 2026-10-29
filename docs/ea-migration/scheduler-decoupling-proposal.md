@@ -17,9 +17,9 @@
 | 5 | PodGroup 生命周期时间戳、排队/运行时长统计 | **剥离** | 作业生命周期控制器 / exporter | P1 |
 | 6 | Reservation 生命周期（TTL、GC、删除 CR、owner 清理） | **部分剥离**：生命周期出去，放置/消费留下 | reservation-controller + webhook | P1 |
 | 7 | delay-schedule 延迟调度 | **剥离** | 上层作业控制器（到点再提交 / 放行） | P1 |
-| 8 | 节点资源指标（45s 全量快照、5min 空闲直方图） | **剥离** | 独立 exporter | P1 |
+| 8 | 节点资源指标（45s 全量快照、5min 空闲直方图） | ~~剥离~~ **保留，插件化** | `node-metrics` 插件，复用会话快照（见 `node-metrics-plugin-design.md`） | P1 |
 | 9 | archimedes HTTP 指标源 | **删除或剥离**（`usage` 插件线上未启用） | 节点利用率 exporter → Prometheus | P2 |
-| 10 | jobbackoff 退避策略 | **部分剥离（可选）**：策略/状态出去，"未到时间不调度"门控留下 | 退避控制器 | P2 |
+| 10 | jobbackoff 退避策略 | ~~部分剥离（可选）~~ **保留，复用 ActionExcluded** | 只拦 preempt/reclaim，删除专用框架钩子（见 `jobbackoff-plugin-design.md`） | P2 |
 | 11 | 节点 GPU 配比（`SetReserveRatio`）、zone 配比配置 | **可选剥离** | 节点打标控制器 | P2 |
 | 12 | 节点池 / 队列专属节点（`scheduling-type`、`slaCards`）、队列利用率注解 | **保持外置**（数据源已在外部） | 已有的上层管理组件 | — |
 
@@ -182,6 +182,8 @@
 
 ### 3.4 Redis 排队序号上报（P0）
 
+> **修订**：本节结论已调整为"保留插件，P0 整改（去掉 `init()`、异步写入）"，详见 [redis-plugin-async-writer.md](./redis-plugin-async-writer.md)。以下为原始分析，保留备查。
+
 **现状**
 - `pkg/scheduler/plugins/redis/`（约 750 行）在 `init()` 里用环境变量 `REDIS_HOST_PORT` / `REDIS_PASSWORD` 建立 Redis 连接。
 - 会话中按作业计算 `pending_index`，用 pipeline 执行 `HSet` / `HDel`。
@@ -202,6 +204,8 @@
 **注意**：如果业务能接受"近似序号"，同步服务也可以按"队列优先级 + 作业等级 + 创建时间"自行排序，调度器完全不用改。但这样和真实调度顺序可能有偏差（例如受 backoff、cooldown 影响的作业），需要业务确认。
 
 ### 3.5 PodGroup 生命周期时间戳、排队/运行时长统计（P1）
+
+> **修订**：本节结论已调整为"不外移，收拢成调度器内的 `job-lifecycle` 插件"，详见 [job-lifecycle-plugin-design.md](./job-lifecycle-plugin-design.md)。以下为原始分析，保留备查。
 
 **现状**
 - `pkg/scheduler/framework/session.go` 的 `addJobTimeStamp`（约 478 行，只处理离线任务）往 PodGroup 写入首次调度时间、目标调度时间、运行开始/结束时间、各 pending 原因的累计时长等注解。
@@ -270,6 +274,8 @@
 
 ### 3.8 节点资源指标（P1）
 
+> **修订**：结论改为"不剥离，改造为只读的 `node-metrics` 插件"。插件复用会话快照，不再额外调用 `Snapshot()`，用自定义 Collector 原子发布，指标名和标签保持不变。原因：可回收资源依赖调度器内部的 `ReclaimAble/Elasticable` 语义；空闲直方图是调度器视角的 Idle；cache 只在 leader 上运行，不存在多副本重复上报。详见 `node-metrics-plugin-design.md`。下文保留原分析，仅供参考。
+
 **现状**
 - `cache.go` 启动了 `handleUpdateNodeMetrics`（每 45s）和 `updateNodeFreeResourceMetrics`（每 5min）。两者都调用 `sc.Snapshot()` 做**全量深拷贝快照**，然后计算节点已分配、空闲、可回收资源和空闲直方图（`metrics/node.go` 约 190 行）。
 
@@ -293,6 +299,8 @@
 **理由**：调度器不应该依赖某个特定内部服务的私有 HTTP 协议；社区的指标源接口已经足够用。
 
 ### 3.10 jobbackoff 退避（P2，可选部分剥离）
+
+> **修订**：结论改为"不剥离，改用社区扩展点"。线上配置是 `enableBackoffCheck: false`，退避实际只拦 reclaim/preempt，不拦 allocate。拦截点复用内部已有的 ActionExcluded 门控：它能感知 action（默认只拦 preempt、reclaim），支持弃权，调用位置紧挨着原来的 `IsBackoffBlocked`，delay-schedule 和 reservation 本来也依赖它。jobbackoff 专用的框架钩子和 action 中的门控调用全部删除，注解格式不变。如果将来要去掉 ActionExcluded，退路是社区的 `JobStarvingFn`。不用 `JobValidFn`，因为它会连 allocate 和 backfill 一起拦。详见 `jobbackoff-plugin-design.md`。下文保留原分析，仅供参考。
 
 **现状**
 - `pkg/scheduler/plugins/jobbackoff/`（约 780 行）在调度器里维护退避状态机：失败次数、指数退避、按 HDK 版本分桶、下次重试时间、阻塞原因类型。
