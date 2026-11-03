@@ -25,6 +25,7 @@
 - **工作量约 10.5 人天**，不含已有单独文档的 jobbackoff、job-lifecycle、node-metrics。
 - **`eaprofile` 插件的完整实现**（目录结构、画像表、翻译、钩子、配置自检、指标、测试）见 4.6。
 - **具体改造示例**（`task-property` 插件、preempt action、一个抢占场景的前后对比、其他插件的改法）见附录 A。
+- **1b 继续使用 v1.16 的 `preempt` / `reclaim`，不切换到 `gangpreempt` / `gangreclaim`**。能力对照和原因见附录 B，待确认项见第 10 节第 10 条。
 
 ## 1. 范围与分层定义
 
@@ -1351,6 +1352,14 @@ fi
    - 迁移时先等价保留；
    - 是否修复（改用 `NodeOf(node).GPUDevice`），需要业务确认。修复后，"不允许使用有空闲 GPU 的节点"会在 jdos 节点上真正生效，CPU 任务可用的节点会变少，打分也会变化。
 9. **eaframework 能否在 1a 去掉**：调度器之外，archimedes 也依赖 eaframework。如果 archimedes 暂时不改，eaframework 就会在 `go.mod` 里多留一段时间，但调度器的 `api` 层已经不再引用它，不影响本文目标。
+10. **1b 不切换到 `gangpreempt` / `gangreclaim`**（附录 B）：
+    - **结论（待确认）**：1b 的 actions 保持 `allocate, reclaim, preempt, backfill`。本文的受害者规则、抢占者过滤、`task.Preemptable` 并集、`SchGated` 翻译都是按 v1.16 的 `preempt` / `reclaim` 设计的，对 gang 系列不成立。
+    - **原因**：
+      - gang 系列在 action 里写死了 PriorityClass 优先级比较；
+      - 它和 4.3.3 的 `job.Preemptable` 覆盖方案冲突；
+      - 它会丢掉 relaxEvictByJob、作业内抢占、弹性作业部分扩容、Coeviction 等线上在用的能力；
+      - 社区要求它不能和 `preempt` / `reclaim` 同时配置，没法灰度。
+    - **以后评估切换的前提**见 B.5。评估单独立项，不计入本文工作量。
 
 ## 附录 A：改造示例
 
@@ -1574,3 +1583,100 @@ D 这一格说明了为什么一定要有"先放宽、再收窄"的两步：
 - v1.16 社区的 `job.Preemptable` 读的也是这个注解。
 
 如果画像插件不把 `job.Preemptable` 覆盖成内部语义（4.3.3），tdm 排序拿到的就会是"可回收"的含义。
+
+## 附录 B：`gangpreempt` / `gangreclaim` 能否替代线上的 `preempt` / `reclaim`
+
+**结论：不能直接替代，1b 继续使用 v1.16 的 `preempt` / `reclaim`（第 10 节第 10 条）。**
+
+v1.16 新增的 `gangpreempt` / `gangreclaim` 是另一套模型：
+- 按 HyperNode 拓扑域选受害者；
+- 按受害者作业的 gang 约束把候选任务切成 safe / whole 两种 bundle；
+- 驱逐后用和 allocate 相同的逻辑模拟整个抢占作业能否放下。
+
+线上 `preempt` / `reclaim` 依赖的内部能力，有一半以上在它们里面没有对应，其中几处是写死在 action 代码里的规则，插件改不了。
+
+另外，社区设计文档 `docs/design/gang-aware-eviction-design.md` 明确要求：gang 系列不能和 `preempt` / `reclaim` 同时出现在 actions 配置里。所以只能整体切换，没法按场景混用或灰度。
+
+### B.1 线上实际用到的能力
+
+- actions 是 `allocate, reclaim, preempt, backfill`。
+- `preempt`、`reclaim` 都配了 `overusedCheckGangEnable: true`，以及 `enableTopologyAwarePreemption` / `enableTopologyAwareReclamation`。因此：
+  - `preempt` 实际走 `withoutFitNodePreempt`，满足 relax 条件时走 `relaxEvictByJob`（`relax.go`）；
+  - `reclaim` 实际走"按作业调用 `Preemptive(queue, job)`"，不做队列级 `Overused` 和逐任务的 `Allocatable` / `Preemptive` 检查；
+  - SuperPod 作业走拓扑感知分支（`topology_aware.go`）。
+- 插件侧：
+  - priority 配了 `enablePreemptable: false`，gang 配了 `enablePreemptable: false`、`enableReclaimable: false`；
+  - 真正决定受害者的是 task-property、elastic、notebook、conformance、capacity；
+  - replica-gang 提供 `VictimProtection` 和 `Coeviction`；
+  - tdm 关闭了受害者功能，pdb 和 rescheduling 没有配置，所以 `VictimTasks` 线上没有作用。
+
+### B.2 preempt 能力对照
+
+| 内部能力 | `gangpreempt` |
+|---|---|
+| 抢占者过滤：可回收作业不发起抢占，检查队列 `PreemptLow` / `HasReclaimableJob`（`preempt.go:150`） | 没有 |
+| `ActionExcluded`（delay-schedule、reservation） | 没有，action 里不调用 `IsActionExcluded` |
+| jobbackoff 退避拦截（`IsBackoffBlocked`） | 没有 |
+| 在线超时任务跳过 | 有，前提是翻译成 `SchGated`（4.3.1） |
+| 受害者规则：task-property 按 JobProperty 和 `PreemptLow` 判断 | **冲突**：`gangpreempt.go:211` 写死"受害者作业的 PriorityClass 优先级必须更低" |
+| 作业内抢占（同一作业的任务之间） | 没有 |
+| relaxEvictByJob：只为腾出配额而驱逐，不要求抢占作业 Pipelined 就提交 | 没有，必须 `JobPipelined` 才提交 |
+| 逐节点按需驱逐，使用 `VictimTaskOrder`、`VictimProtection`、`StableSortNodesByReclaimCost` | 换成按 bundle 排序，这三项都不调用 |
+| SuperPod 拓扑感知抢占 | 换成 HyperNode 拓扑，机制不同 |
+| 弹性作业部分扩容（逐个任务抢，抢到几个算几个） | 全有或全无 |
+
+### B.3 reclaim 能力对照
+
+| 内部能力 | `gangreclaim` |
+|---|---|
+| 队列门禁：按作业调用 `Preemptive(queue, job)`，含内部 capacity 的 nonPreemptAlloc 和弹性逻辑 | 先 `Overused(queue)` 再 `Preemptive(queue, []*TaskInfo)`，签名不同，capacity 要重写 |
+| 受害者资格：`ReclaimAble \|\| Elasticable`（`reclaim_victim.go:45`） | **冲突**：见 B.4 第 2 条 |
+| capacity 的回收规则 | 要重写成 `UnifiedEvictableFn` |
+| 受害者作业排序 `ReclaimOrderFn`（queue-reclaim、notebook） | 不调用，换成 `VictimQueueOrderFn` 加 ROI |
+| replica-gang 连带驱逐（`Coeviction`） | 不调用 |
+| SuperPod 拓扑感知回收 | 同 B.2 |
+
+ROI 指 bundle 腾出的资源和抢占需求的匹配度，见 `actions/utils/bundle.go` 的 `bundleROI`。
+
+### B.4 关键问题
+
+1. **抢占的受害者规则写死在 action 里。** `gangpreempt.go:211` 只认 `job.Priority`，内部的 `job.Priority` 来自 PriorityClass（`cache.go:1728-1732`），和 JobProperty 是两套东西。要沿用"Prod 抢 Exp、按队列开 `PreemptLow`"的语义，只有两条路：
+   - 改社区 action 文件，违反第 1 节的分层原则；
+   - 业务侧让所有作业的 PriorityClass 和 JobProperty 严格对齐。
+2. **和 4.3.3 的 `job.Preemptable` 覆盖冲突。**
+   - `IsJobPreemptableForGangEviction`（`actions/utils/util.go:120`）在 PodGroup 带 `volcano.sh/preemptable` 注解时读 `job.Preemptable`。
+   - 内部这个注解的含义是"可回收"，而 4.3.3 要把 `job.Preemptable` 改写成"可被队列内抢占"。
+   - 两者叠加，"可回收但不可被队列内抢占"的作业会被 `gangreclaim` 排除。
+   - 弹性作业也受影响：`setDefaultPreemptProperty` 会把它的 `Reclaimable` 和 `Preemptable` 都强制置为 false。
+3. **`UnifiedEvictable` 没有开关。**
+   - `session_plugins.go:330` 不检查 `isEnabled`。priority 配了 `enablePreemptable: false` 也没用，它的 `UnifiedEvictableFn` 照样会在 `gangpreempt` 里按优先级过滤。
+   - task-property、elastic、notebook 都要各自补一份 `UnifiedEvictableFn`，4.4.2 的受害者判定表要再实现一遍。
+   - `EvictionContext` 只带抢占作业，不带抢占任务，任务级规则要改成作业级。
+4. **可能多驱逐。**
+   - 没有 HyperNode 时，候选域退化成整个集群（`GetCandidateDomains` 回退到 `ClusterTopHyperNode`，它包含所有节点）。
+   - 选择方式是按顺序累加 bundle，直到"域内空闲 + 已选受害者"在总量上够用，再模拟放置；放不下就加下一个 bundle 重试。
+   - 最终提交的是整个已选集合，不会剔除放置时没用上的节点上的受害者。GPU 碎片化严重时，驱逐量可能明显大于内部逐节点按需驱逐的结果。
+5. **弹性作业部分扩容变成全有或全无。** 已就绪的作业没有配置 SubJob 时，所有任务都在默认 SubJob 里，`runSimulateTrialAtHyperNode` 中任何一个待调度任务放不下，整次模拟就失败。内部的做法是逐个任务抢占，能扩几个算几个。
+6. **和 replica-gang 的语义对不上。** bundle 模型允许打破一个 SubJob，但同组其余成员会继续运行，资源被白占。内部 `Coeviction` 的做法是整组一起驱逐。
+
+### B.5 gang 系列的优点，以及以后切换的前提
+
+**优点：**
+- 不会无谓地打碎受害者的 gang（线上 gang 插件的受害者过滤是关着的）；
+- 驱逐后的放置模拟和 allocate 是同一套逻辑；
+- capacity 在每个拓扑域只被调用一次，配额核算更准确；
+- 原生支持 HyperNode 和 SubJob。
+
+这些对"大训练作业按拓扑整体抢占"的场景有价值，但当前线上并不依赖。
+
+**以后评估切换，至少要先满足以下前提：**
+
+| 前提 | 对应问题 |
+|---|---|
+| PriorityClass 和 JobProperty 对齐；或者向社区提 PR，把写死的优先级比较改成插件钩子 | B.4 第 1 条 |
+| `IsJobPreemptableForGangEviction` 和内部注解语义的冲突有解法，例如社区改为读 `task.Preemptable`，或内部换一个注解 key | B.4 第 2 条 |
+| 内部受害者插件都实现 `UnifiedEvictableFn`；priority 的行为通过配置或代码处理掉 | B.4 第 3 条 |
+| 多驱逐控制在可接受范围：配置 HyperNode 缩小候选域，或向社区提议剔除未用上的受害者 | B.4 第 4 条 |
+| 接受失去或替代掉：relaxEvictByJob、作业内抢占、弹性部分扩容、`Coeviction`、`VictimProtection`、`ReclaimOrderFn`、`ActionExcluded`、backoff 拦截 | B.2、B.3、B.4 第 5、6 条 |
+| SuperPod 作业改用 HyperNode 描述拓扑，配好 network-topology-aware 插件 | B.2 |
+| 有独立集群或影子调度器做验证，因为不能和 `preempt` / `reclaim` 共存，没法在线灰度 | 社区约束 |
