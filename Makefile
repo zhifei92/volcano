@@ -24,6 +24,11 @@ CC ?= "gcc"
 MUSL_CC ?= "/usr/local/musl/bin/musl-gcc"
 SUPPORT_PLUGINS ?= "no"
 CRD_VERSION ?= v1
+# Set to true to strip CEL validation rules (x-kubernetes-validations) from the generated
+# release YAML and write them to config/crd/volcano/k8s119 (generate-yaml only; config/crd/*/bases
+# and installer/helm are not modified),
+# for clusters older than Kubernetes 1.29, e.g. 1.19. See docs/user-guide/k8s_1.19_crd_validation.md.
+CRD_STRIP_CEL ?= false
 BUILDX_OUTPUT_TYPE ?= "docker"
 FORCE_REBUILD ?= true
 

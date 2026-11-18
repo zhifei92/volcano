@@ -213,6 +213,22 @@ ${HELM_BIN_DIR}/helm template ${VK_ROOT}/installer/helm/chart/volcano/charts/job
       -s templates/flow_v1alpha1_jobtemplates.yaml \
       >> ${DEPLOYMENT_FILE}
 
+# Strip CEL validation rules from the generated release YAML only, for clusters older than 1.29.
+# config/crd/*/bases and installer/helm are left untouched. See docs/user-guide/k8s_1.19_crd_validation.md.
+if [[ "${CRD_STRIP_CEL:-false}" == "true" ]]; then
+  echo "Stripping CEL validations (x-kubernetes-validations) from ${DEPLOYMENT_FILE}"
+  ${VK_ROOT}/hack/strip-cel-validations.sh ${DEPLOYMENT_FILE}
+
+  # Also output the stripped CRDs on their own, so they can be applied or packaged separately.
+  # Default: config/crd/volcano/k8s119 (sibling of bases/ and v1beta1/). Override with CRD_STRIP_DIR.
+  CRD_STRIP_DIR=${CRD_STRIP_DIR:-${VOLCANO_CRD_DIR}/k8s119}
+  echo "Writing stripped CRDs into ${CRD_STRIP_DIR}"
+  rm -rf "${CRD_STRIP_DIR}"
+  mkdir -p "${CRD_STRIP_DIR}"
+  cp ${VOLCANO_CRD_DIR}/bases/*.yaml ${JOBFLOW_CRD_DIR}/bases/*.yaml "${CRD_STRIP_DIR}/"
+  ${VK_ROOT}/hack/strip-cel-validations.sh "${CRD_STRIP_DIR}"/*.yaml
+fi
+
 # Monitoring
 ${HELM_BIN_DIR}/helm template ${VK_ROOT}/installer/helm/chart/volcano --namespace volcano-monitoring \
       --name-template volcano --set basic.image_tag_version=${VOLCANO_IMAGE_TAG} --set custom.metrics_enable=true \

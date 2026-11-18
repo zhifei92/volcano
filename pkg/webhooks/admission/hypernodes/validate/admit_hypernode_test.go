@@ -73,9 +73,9 @@ func TestValidateHyperNode(t *testing.T) {
 			},
 			ExpectErr: true,
 		},
-		// Note: selector mutual exclusivity and members minItems validations are now enforced by
-		// CRD x-kubernetes-validations and VAP. These test cases are removed as the validation
-		// happens before the webhook is called.
+		// Note: selector mutual exclusivity and members minItems are enforced by CRD
+		// x-kubernetes-validations (Kubernetes >= 1.29), before the webhook is called, so these
+		// cases are not tested here. See docs/user-guide/k8s_1.19_crd_validation.md for 1.19.
 		{
 			Name: "validate valid hypernode with labelMatch",
 			HyperNode: hypernodev1alpha1.HyperNode{
@@ -99,8 +99,8 @@ func TestValidateHyperNode(t *testing.T) {
 			},
 			ExpectErr: false,
 		},
-		// Note: selector mutual exclusivity validation is now enforced by CRD x-kubernetes-validations
-		// and VAP. This test case is removed as the validation happens before the webhook is called.
+		// Note: selector mutual exclusivity is enforced by CRD x-kubernetes-validations (Kubernetes >= 1.29),
+		// before the webhook is called, so this case is not tested here.
 	}
 
 	for _, testCase := range testCases {

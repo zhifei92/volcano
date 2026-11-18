@@ -83,9 +83,10 @@ func AdmitHyperNode(ar admissionv1.AdmissionReview) *admissionv1.AdmissionRespon
 }
 
 // validateHyperNodeRegexPattern validates regex pattern compilation.
-// Note: Other selector validations (mutual exclusivity, required fields, format) are now
-// enforced by CRD x-kubernetes-validations and VAP. This function only validates regex
-// pattern compilation, as VAP only does basic syntax checks.
+// Note: Selector mutual exclusivity and required fields are enforced by CRD
+// x-kubernetes-validations (Kubernetes >= 1.29). On clusters without CEL support, e.g. 1.19,
+// they are not enforced and must be ensured by the user; see
+// docs/user-guide/k8s_1.19_crd_validation.md. This function only validates regex pattern compilation.
 func validateHyperNodeRegexPattern(selector hypernodev1alpha1.MemberSelector, fldPath *field.Path) field.ErrorList {
 	errs := field.ErrorList{}
 	if selector.RegexMatch != nil && selector.RegexMatch.Pattern != "" {
@@ -106,7 +107,8 @@ func validateHyperNode(hypernode *hypernodev1alpha1.HyperNode) error {
 		errs = append(errs, field.Invalid(resourcePath.Child("spec").Child("members"), hypernode.Spec.Members,
 			"member must have at least one member"))
 	}
-	// Note: selector validations (mutual exclusivity, required fields, format) are now enforced by CRD x-kubernetes-validations and VAP
+	// Note: selector mutual exclusivity and required fields are enforced by CRD x-kubernetes-validations (Kubernetes >= 1.29).
+	// On clusters without CEL support (see docs/user-guide/k8s_1.19_crd_validation.md) they must be ensured by the user.
 	for _, member := range hypernode.Spec.Members {
 		// Only validate regex pattern compilation, as VAP only does basic syntax checks
 		errs = append(errs, validateHyperNodeRegexPattern(member.Selector,
